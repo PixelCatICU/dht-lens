@@ -18,6 +18,7 @@ pub struct DhtConfig {
     pub bootstrap_nodes: Vec<String>,
     pub max_inflight_queries: usize,
     pub routing_table_max_nodes: usize,
+    pub virtual_nodes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +91,7 @@ impl AppConfig {
                 bootstrap_nodes,
                 max_inflight_queries: env_usize("DHT_MAX_INFLIGHT_QUERIES", 10_000),
                 routing_table_max_nodes: env_usize("DHT_ROUTING_TABLE_MAX_NODES", 50_000),
+                virtual_nodes: env_usize("DHT_VIRTUAL_NODES", 128).clamp(1, 2_048),
             },
             metadata: MetadataConfig {
                 max_concurrent_fetches: env_usize("METADATA_MAX_CONCURRENT_FETCHES", 1_000),

@@ -107,10 +107,12 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
     let v4_config = config.clone();
     let v4_tx = tx.clone();
     let v4_nodes = nodes.clone();
+    let v4_virtual_node_count = config.virtual_nodes;
     tasks.push(tokio::spawn(async move {
         if let Err(err) = run_listener(
             v4_config.listen_addr,
             v4_config.bootstrap_nodes,
+            v4_virtual_node_count,
             v4_nodes,
             v4_tx,
         )
@@ -124,8 +126,17 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
         let v6_tx = tx.clone();
         let bootstrap_nodes = config.bootstrap_nodes.clone();
         let v6_nodes = nodes.clone();
+        let v6_virtual_node_count = config.virtual_nodes;
         tasks.push(tokio::spawn(async move {
-            if let Err(err) = run_listener(listen_addr_v6, bootstrap_nodes, v6_nodes, v6_tx).await {
+            if let Err(err) = run_listener(
+                listen_addr_v6,
+                bootstrap_nodes,
+                v6_virtual_node_count,
+                v6_nodes,
+                v6_tx,
+            )
+            .await
+            {
                 warn!(addr = %listen_addr_v6, error = %err, "dht listener stopped");
             }
         }));
@@ -141,16 +152,20 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
 async fn run_listener(
     listen_addr: SocketAddr,
     bootstrap_nodes: Vec<String>,
+    virtual_node_count: usize,
     nodes: Arc<NodeTable>,
     tx: mpsc::Sender<InfoHashEvent>,
 ) -> Result<()> {
     let socket = Arc::new(bind_udp_socket(listen_addr)?);
-    let node_id = random_id();
+    let node_ids: Arc<[[u8; 20]]> = (0..virtual_node_count)
+        .map(|_| random_id())
+        .collect::<Vec<_>>()
+        .into();
 
-    info!(addr = %listen_addr, "dht listener bound");
+    info!(addr = %listen_addr, virtual_nodes = node_ids.len(), "dht listener bound");
     tokio::spawn(bootstrap_loop(
         socket.clone(),
-        node_id,
+        node_ids.clone(),
         bootstrap_nodes,
         nodes.clone(),
     ));
@@ -160,8 +175,15 @@ async fn run_listener(
         let (len, addr) = socket.recv_from(&mut buf).await?;
         let packet = &buf[..len];
         nodes.add(addr);
-        if let Err(err) =
-            handle_packet(socket.clone(), node_id, nodes.clone(), addr, packet, &tx).await
+        if let Err(err) = handle_packet(
+            socket.clone(),
+            node_ids.clone(),
+            nodes.clone(),
+            addr,
+            packet,
+            &tx,
+        )
+        .await
         {
             debug!(%addr, error = %err, "ignored dht packet");
         }
@@ -237,7 +259,7 @@ pub async fn get_peers(info_hash: [u8; 20], config: &DhtConfig) -> Result<Vec<So
 
 async fn bootstrap_loop(
     socket: Arc<UdpSocket>,
-    node_id: [u8; 20],
+    node_ids: Arc<[[u8; 20]]>,
     bootstrap_nodes: Vec<String>,
     nodes: Arc<NodeTable>,
 ) {
@@ -251,6 +273,7 @@ async fn bootstrap_loop(
     };
 
     let mut round = 0u64;
+    let mut node_index = 0usize;
     loop {
         round += 1;
         ticker.tick().await;
@@ -267,6 +290,8 @@ async fn bootstrap_loop(
             }
 
             let target = random_id();
+            let node_id = node_ids[node_index % node_ids.len()];
+            node_index = node_index.wrapping_add(1);
             let request = find_node_request(&node_id, &target);
             if let Err(err) = socket.send_to(&request, addr).await {
                 if err.raw_os_error() == Some(101) {
@@ -292,6 +317,7 @@ async fn bootstrap_loop(
             info!(
                 local_addr = %local_addr,
                 known_nodes = nodes.len(),
+                virtual_nodes = node_ids.len(),
                 target_count,
                 "dht bootstrap round complete"
             );
@@ -299,6 +325,7 @@ async fn bootstrap_loop(
             debug!(
                 local_addr = %local_addr,
                 known_nodes = nodes.len(),
+                virtual_nodes = node_ids.len(),
                 target_count,
                 "dht bootstrap round complete"
             );
@@ -308,7 +335,7 @@ async fn bootstrap_loop(
 
 async fn handle_packet(
     socket: Arc<UdpSocket>,
-    node_id: [u8; 20],
+    node_ids: Arc<[[u8; 20]]>,
     nodes: Arc<NodeTable>,
     addr: SocketAddr,
     packet: &[u8],
@@ -342,10 +369,16 @@ async fn handle_packet(
 
     match query {
         b"ping" => {
+            let node_id = node_ids[0];
             let response = response(transaction, node_id, BTreeMap::new());
             socket.send_to(&response, addr).await?;
         }
         b"find_node" => {
+            let node_id = dict_get(args, b"target")
+                .and_then(as_bytes)
+                .and_then(to_hash)
+                .map(|target| closest_node_id(&node_ids, &target))
+                .unwrap_or(node_ids[0]);
             let mut extra = BTreeMap::new();
             extra.insert(
                 b"nodes".to_vec(),
@@ -369,6 +402,11 @@ async fn handle_packet(
                     })
                     .await;
             }
+            let node_id = dict_get(args, b"info_hash")
+                .and_then(as_bytes)
+                .and_then(to_hash)
+                .map(|hash| closest_node_id(&node_ids, &hash))
+                .unwrap_or(node_ids[0]);
             let mut extra = BTreeMap::new();
             extra.insert(b"token".to_vec(), Value::Bytes(b"dht-lens".to_vec()));
             extra.insert(
@@ -383,6 +421,7 @@ async fn handle_packet(
                 .and_then(as_bytes)
                 .and_then(to_hash)
             {
+                let node_id = closest_node_id(&node_ids, &hash);
                 info!(info_hash = %hex::encode(hash), source = "announce_peer", "discovered info_hash");
                 let _ = tx
                     .send(InfoHashEvent {
@@ -392,7 +431,11 @@ async fn handle_packet(
                         seen_at: now_ts(),
                     })
                     .await;
+                let response = response(transaction, node_id, BTreeMap::new());
+                socket.send_to(&response, addr).await?;
+                return Ok(());
             }
+            let node_id = node_ids[0];
             let response = response(transaction, node_id, BTreeMap::new());
             socket.send_to(&response, addr).await?;
         }
@@ -525,6 +568,22 @@ fn random_transaction() -> Vec<u8> {
     let mut tx = [0u8; 4];
     rand::thread_rng().fill_bytes(&mut tx);
     tx.to_vec()
+}
+
+fn closest_node_id(node_ids: &[[u8; 20]], target: &[u8; 20]) -> [u8; 20] {
+    node_ids
+        .iter()
+        .min_by(|left, right| xor_distance(left, target).cmp(&xor_distance(right, target)))
+        .copied()
+        .unwrap_or_else(random_id)
+}
+
+fn xor_distance(left: &[u8; 20], right: &[u8; 20]) -> [u8; 20] {
+    let mut distance = [0u8; 20];
+    for (index, byte) in distance.iter_mut().enumerate() {
+        *byte = left[index] ^ right[index];
+    }
+    distance
 }
 
 fn to_hash(bytes: &[u8]) -> Option<[u8; 20]> {
