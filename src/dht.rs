@@ -154,6 +154,16 @@ async fn bootstrap_loop(socket: Arc<UdpSocket>, node_id: [u8; 20], nodes: Vec<St
                 let target = random_id();
                 let request = find_node_request(&node_id, &target);
                 if let Err(err) = socket.send_to(&request, addr).await {
+                    if err.raw_os_error() == Some(101) {
+                        warn!(
+                            local_addr = %local_addr,
+                            node = %addr,
+                            error = %err,
+                            "network unreachable; disabling dht bootstrap for this listener"
+                        );
+                        return;
+                    }
+
                     warn!(
                         local_addr = %local_addr,
                         node = %addr,
