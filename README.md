@@ -77,6 +77,7 @@ This repo includes:
 
 - `captain-definition`
 - `Dockerfile`
+- `.github/workflows/deploy.yml`
 - `scripts/caprover-start.sh`
 - `scripts/deploy-caprover.sh`
 
@@ -97,6 +98,21 @@ Deploy with CapRover CLI:
 export CAPROVER_APP=dht-lens
 ./scripts/deploy-caprover.sh
 ```
+
+The preferred deployment path is GitHub Actions:
+
+1. GitHub Actions builds and pushes `ghcr.io/pixelcaticu/dht-lens:latest`.
+2. CapRover reads `captain-definition`.
+3. CapRover pulls the prebuilt image instead of building Rust on the server.
+
+Set this GitHub Actions secret to auto-deploy after image push:
+
+```text
+CAPROVER_DEPLOY_WEBHOOK
+```
+
+The GHCR package must be public, or CapRover must be configured with registry
+credentials that can pull `ghcr.io/pixelcaticu/dht-lens:latest`.
 
 The container starts with:
 
