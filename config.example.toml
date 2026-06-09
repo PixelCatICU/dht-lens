@@ -1,0 +1,30 @@
+[dht]
+listen_addr = "0.0.0.0:6881"
+bootstrap_nodes = [
+  "router.bittorrent.com:6881",
+  "dht.transmissionbt.com:6881",
+  "router.utorrent.com:6881"
+]
+max_inflight_queries = 10000
+routing_table_max_nodes = 50000
+
+[metadata]
+max_concurrent_fetches = 1000
+connect_timeout_secs = 5
+metadata_timeout_secs = 15
+max_metadata_size_mb = 8
+
+[pipeline]
+info_hash_queue_size = 200000
+result_queue_size = 50000
+print_jsonl = true
+
+[storage]
+enabled = true
+batch_size = 100
+flush_interval_ms = 1000
+max_files_per_torrent = 2000
+max_file_path_len = 1024
+
+[search]
+max_name_ngram_len = 4096

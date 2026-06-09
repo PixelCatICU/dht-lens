@@ -1,0 +1,148 @@
+# dht-lens
+
+Rust DHT magnet metadata crawler.
+
+The first version runs as a single-node long-lived service:
+
+- listens on public Mainline DHT
+- discovers `info_hash` from `get_peers` and `announce_peer`
+- actively queries DHT peers for the discovered hash
+- fetches BEP 9 torrent metadata from peers
+- parses `name`, `total_size`, and file list
+- prints JSONL
+- writes successful metadata only to remote libSQL
+- indexes `name_ngram` with libSQL FTS5
+- stores 5-minute and hourly trend buckets
+
+It does not store failed metadata fetches.
+
+## Setup
+
+Create `.env`:
+
+```env
+LIBSQL_DATABASE_URL=https://libsql-db.vlist.cyou
+LIBSQL_AUTH_TOKEN=replace-with-token
+```
+
+Optional runtime settings can be provided through environment variables:
+
+```env
+DHT_LISTEN_ADDR=0.0.0.0:6881
+DHT_MAX_INFLIGHT_QUERIES=10000
+DHT_ROUTING_TABLE_MAX_NODES=50000
+METADATA_MAX_CONCURRENT_FETCHES=1000
+METADATA_CONNECT_TIMEOUT_SECS=5
+METADATA_TIMEOUT_SECS=15
+METADATA_MAX_SIZE_MB=8
+INFO_HASH_QUEUE_SIZE=200000
+PRINT_JSONL=true
+STORAGE_ENABLED=true
+DB_BATCH_SIZE=100
+DB_FLUSH_INTERVAL_MS=1000
+MAX_FILES_PER_TORRENT=2000
+MAX_FILE_PATH_LEN=1024
+MAX_NAME_NGRAM_LEN=4096
+```
+
+## Commands
+
+Run database migrations:
+
+```bash
+cargo run -- migrate
+```
+
+Start crawler:
+
+```bash
+cargo run -- crawl --print
+```
+
+Search by name:
+
+```bash
+cargo run -- search "周杰伦" --limit 20
+```
+
+Parse a local `.torrent` file for parser verification:
+
+```bash
+cargo run -- parse-torrent ./sample.torrent
+```
+
+## CapRover Deploy
+
+This repo includes:
+
+- `captain-definition`
+- `Dockerfile`
+- `scripts/caprover-start.sh`
+- `scripts/deploy-caprover.sh`
+
+Set these CapRover app environment variables:
+
+```env
+LIBSQL_DATABASE_URL=https://libsql-db.vlist.cyou
+LIBSQL_AUTH_TOKEN=replace-with-token
+RUST_LOG=dht_lens=info
+DHT_LISTEN_ADDR=0.0.0.0:6881
+PRINT_JSONL=true
+STORAGE_ENABLED=true
+```
+
+Deploy with CapRover CLI:
+
+```bash
+export CAPROVER_APP=dht-lens
+./scripts/deploy-caprover.sh
+```
+
+The container starts with:
+
+```bash
+dht-lens migrate
+dht-lens crawl --print
+```
+
+CapRover's normal HTTP routing does not automatically publish UDP DHT traffic.
+For best DHT listener performance, expose UDP `6881` on the host or run this
+service on a host/network where inbound UDP is reachable. The crawler still
+performs active `get_peers` queries, but passive DHT discovery benefits from
+inbound UDP.
+
+## Database
+
+The schema uses `BLOB(20)` for the primary `info_hash` and keeps `info_hash_hex`
+for API output and FTS joins.
+
+Tables:
+
+- `torrents`: successful metadata records
+- `torrent_files`: per-file rows, keyed by `(info_hash, file_index)`
+- `torrent_search`: FTS5 table for `name_ngram`
+- `torrent_observation_5m`: 5-minute trend buckets
+- `torrent_observation_hourly`: hourly trend buckets
+
+## Search
+
+`name_ngram` is generated in the application:
+
+- CJK text uses 2-gram and 3-gram tokens
+- ASCII words and numbers are lowercased and kept as tokens
+- files are not indexed in v1
+
+Example:
+
+```text
+周杰伦演唱会.2024.1080p
+=> 周杰 杰伦 伦演 演唱 唱会 周杰伦 杰伦演 伦演唱 演唱会 2024 1080p
+```
+
+## Current Boundary
+
+This version implements the crawler pipeline and protocol primitives directly.
+The DHT side is intentionally lightweight: it listens for incoming KRPC queries
+and performs active `get_peers` queries against bootstrap and returned nodes for
+each observed hash. A production crawler should next add a persistent routing
+table, token validation, better node scoring, and batched DB writer flushing.
