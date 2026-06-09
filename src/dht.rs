@@ -135,13 +135,32 @@ pub async fn get_peers(info_hash: [u8; 20], config: &DhtConfig) -> Result<Vec<So
 
 async fn bootstrap_loop(socket: Arc<UdpSocket>, node_id: [u8; 20], nodes: Vec<String>) {
     let mut ticker = interval(Duration::from_secs(15));
+    let local_addr = match socket.local_addr() {
+        Ok(addr) => addr,
+        Err(err) => {
+            warn!(error = %err, "failed to read dht socket local addr");
+            return;
+        }
+    };
+
     loop {
         ticker.tick().await;
         for node in &nodes {
-            let target = random_id();
-            let request = find_node_request(&node_id, &target);
-            if let Err(err) = socket.send_to(&request, node).await {
-                warn!(node, error = %err, "failed to send dht bootstrap request");
+            for addr in resolve_addrs(node).await {
+                if addr.is_ipv4() != local_addr.is_ipv4() {
+                    continue;
+                }
+
+                let target = random_id();
+                let request = find_node_request(&node_id, &target);
+                if let Err(err) = socket.send_to(&request, addr).await {
+                    warn!(
+                        local_addr = %local_addr,
+                        node = %addr,
+                        error = %err,
+                        "failed to send dht bootstrap request"
+                    );
+                }
             }
         }
     }
