@@ -21,7 +21,7 @@ It does not store failed metadata fetches.
 Create `.env`:
 
 ```env
-LIBSQL_DATABASE_URL=https://libsql-db.vlist.cyou
+LIBSQL_DATABASE_URL=https://your-libsql-host.example.com
 LIBSQL_AUTH_TOKEN=replace-with-token
 ```
 
@@ -83,7 +83,7 @@ This repo includes:
 Set these CapRover app environment variables:
 
 ```env
-LIBSQL_DATABASE_URL=https://libsql-db.vlist.cyou
+LIBSQL_DATABASE_URL=https://your-libsql-host.example.com
 LIBSQL_AUTH_TOKEN=replace-with-token
 RUST_LOG=dht_lens=info
 DHT_LISTEN_ADDR=0.0.0.0:6881
