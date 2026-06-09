@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::Result;
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{
     net::UdpSocket,
@@ -40,7 +40,9 @@ impl NodeTable {
         }
 
         let mut nodes = self.nodes.lock().expect("node table mutex poisoned");
-        if nodes.contains(&addr) {
+        if let Some(index) = nodes.iter().position(|node| *node == addr) {
+            nodes.remove(index);
+            nodes.push_back(addr);
             return;
         }
         nodes.push_back(addr);
@@ -57,11 +59,23 @@ impl NodeTable {
 
     fn sample(&self, family_addr: SocketAddr, limit: usize) -> Vec<SocketAddr> {
         let nodes = self.nodes.lock().expect("node table mutex poisoned");
-        nodes
+        let family_nodes: Vec<_> = nodes
             .iter()
-            .copied()
             .filter(|addr| addr.is_ipv4() == family_addr.is_ipv4())
+            .copied()
+            .collect();
+        if family_nodes.len() <= limit {
+            return family_nodes;
+        }
+
+        let start = rand::thread_rng().gen_range(0..family_nodes.len());
+        family_nodes
+            .iter()
+            .cycle()
+            .skip(start)
             .take(limit)
+            .filter(|addr| addr.is_ipv4() == family_addr.is_ipv4())
+            .copied()
             .collect()
     }
 
@@ -236,13 +250,16 @@ async fn bootstrap_loop(
         }
     };
 
+    let mut round = 0u64;
     loop {
+        round += 1;
         ticker.tick().await;
         let mut targets = nodes.sample(local_addr, 96);
         for node in &bootstrap_nodes {
             targets.extend(resolve_addrs(node).await);
         }
         targets = unique(targets);
+        let target_count = targets.len();
 
         for addr in targets {
             if addr.is_ipv4() != local_addr.is_ipv4() {
@@ -271,11 +288,21 @@ async fn bootstrap_loop(
             }
         }
 
-        debug!(
-            local_addr = %local_addr,
-            nodes = nodes.len(),
-            "dht bootstrap round complete"
-        );
+        if round % 4 == 0 {
+            info!(
+                local_addr = %local_addr,
+                known_nodes = nodes.len(),
+                target_count,
+                "dht bootstrap round complete"
+            );
+        } else {
+            debug!(
+                local_addr = %local_addr,
+                known_nodes = nodes.len(),
+                target_count,
+                "dht bootstrap round complete"
+            );
+        }
     }
 }
 
