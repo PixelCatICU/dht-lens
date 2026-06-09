@@ -2,12 +2,13 @@ use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
 use anyhow::Result;
 use rand::RngCore;
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{
     net::UdpSocket,
     sync::mpsc,
     time::{Duration, Instant, interval, timeout},
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     bencode::{Value, as_bytes, dict_get, encode, parse},
@@ -16,10 +17,43 @@ use crate::{
 };
 
 pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<()> {
-    let socket = Arc::new(UdpSocket::bind(config.listen_addr).await?);
-    let node_id = random_id();
-    let bootstrap_nodes = config.bootstrap_nodes.clone();
+    let mut tasks = Vec::new();
+    let v4_config = config.clone();
+    let v4_tx = tx.clone();
+    tasks.push(tokio::spawn(async move {
+        if let Err(err) =
+            run_listener(v4_config.listen_addr, v4_config.bootstrap_nodes, v4_tx).await
+        {
+            warn!(addr = %v4_config.listen_addr, error = %err, "dht listener stopped");
+        }
+    }));
 
+    if let Some(listen_addr_v6) = config.listen_addr_v6 {
+        let v6_tx = tx.clone();
+        let bootstrap_nodes = config.bootstrap_nodes.clone();
+        tasks.push(tokio::spawn(async move {
+            if let Err(err) = run_listener(listen_addr_v6, bootstrap_nodes, v6_tx).await {
+                warn!(addr = %listen_addr_v6, error = %err, "dht listener stopped");
+            }
+        }));
+    }
+
+    for task in tasks {
+        let _ = task.await;
+    }
+
+    Ok(())
+}
+
+async fn run_listener(
+    listen_addr: SocketAddr,
+    bootstrap_nodes: Vec<String>,
+    tx: mpsc::Sender<InfoHashEvent>,
+) -> Result<()> {
+    let socket = Arc::new(bind_udp_socket(listen_addr)?);
+    let node_id = random_id();
+
+    info!(addr = %listen_addr, "dht listener bound");
     tokio::spawn(bootstrap_loop(socket.clone(), node_id, bootstrap_nodes));
 
     let mut buf = vec![0u8; 4096];
@@ -29,6 +63,23 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
         if let Err(err) = handle_packet(socket.clone(), node_id, addr, packet, &tx).await {
             debug!(%addr, error = %err, "ignored dht packet");
         }
+    }
+}
+
+fn bind_udp_socket(addr: SocketAddr) -> Result<UdpSocket> {
+    if addr.is_ipv6() {
+        let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+        socket.set_only_v6(true)?;
+        socket.set_reuse_address(true)?;
+        socket.bind(&addr.into())?;
+        socket.set_nonblocking(true)?;
+        Ok(UdpSocket::from_std(socket.into())?)
+    } else {
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        socket.set_reuse_address(true)?;
+        socket.bind(&addr.into())?;
+        socket.set_nonblocking(true)?;
+        Ok(UdpSocket::from_std(socket.into())?)
     }
 }
 

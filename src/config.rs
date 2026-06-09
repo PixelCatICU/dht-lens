@@ -14,6 +14,7 @@ pub struct AppConfig {
 #[derive(Debug, Clone)]
 pub struct DhtConfig {
     pub listen_addr: SocketAddr,
+    pub listen_addr_v6: Option<SocketAddr>,
     pub bootstrap_nodes: Vec<String>,
     pub max_inflight_queries: usize,
     pub routing_table_max_nodes: usize,
@@ -56,6 +57,14 @@ impl AppConfig {
             .unwrap_or_else(|_| "0.0.0.0:6881".to_string())
             .parse()
             .context("invalid DHT_LISTEN_ADDR")?;
+        let listen_addr_v6 = match env::var("DHT_LISTEN_ADDR_V6") {
+            Ok(value) => Some(value.parse().context("invalid DHT_LISTEN_ADDR_V6")?),
+            Err(_) => Some(
+                "[::]:6881"
+                    .parse()
+                    .context("invalid default IPv6 DHT address")?,
+            ),
+        };
 
         let bootstrap_nodes = env::var("DHT_BOOTSTRAP_NODES")
             .map(|value| {
@@ -77,6 +86,7 @@ impl AppConfig {
         Ok(Self {
             dht: DhtConfig {
                 listen_addr,
+                listen_addr_v6,
                 bootstrap_nodes,
                 max_inflight_queries: env_usize("DHT_MAX_INFLIGHT_QUERIES", 10_000),
                 routing_table_max_nodes: env_usize("DHT_ROUTING_TABLE_MAX_NODES", 50_000),

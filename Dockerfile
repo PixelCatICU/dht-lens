@@ -26,6 +26,7 @@ RUN chmod +x /usr/local/bin/caprover-start.sh
 
 ENV RUST_LOG=dht_lens=info
 ENV DHT_LISTEN_ADDR=0.0.0.0:6881
+ENV DHT_LISTEN_ADDR_V6=[::]:6881
 ENV PRINT_JSONL=true
 ENV STORAGE_ENABLED=true
 

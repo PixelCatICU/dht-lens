@@ -29,6 +29,7 @@ Optional runtime settings can be provided through environment variables:
 
 ```env
 DHT_LISTEN_ADDR=0.0.0.0:6881
+DHT_LISTEN_ADDR_V6=[::]:6881
 DHT_MAX_INFLIGHT_QUERIES=10000
 DHT_ROUTING_TABLE_MAX_NODES=50000
 METADATA_MAX_CONCURRENT_FETCHES=1000
@@ -88,6 +89,7 @@ LIBSQL_DATABASE_URL=https://your-libsql-host.example.com
 LIBSQL_AUTH_TOKEN=replace-with-token
 RUST_LOG=dht_lens=info
 DHT_LISTEN_ADDR=0.0.0.0:6881
+DHT_LISTEN_ADDR_V6=[::]:6881
 PRINT_JSONL=true
 STORAGE_ENABLED=true
 ```

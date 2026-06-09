@@ -1,5 +1,6 @@
 [dht]
 listen_addr = "0.0.0.0:6881"
+listen_addr_v6 = "[::]:6881"
 bootstrap_nodes = [
   "router.bittorrent.com:6881",
   "dht.transmissionbt.com:6881",
