@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::Result;
 use rand::RngCore;
@@ -16,13 +20,87 @@ use crate::{
     model::{InfoHashEvent, Source, now_ts},
 };
 
+#[derive(Debug)]
+struct NodeTable {
+    nodes: Mutex<VecDeque<SocketAddr>>,
+    max_nodes: usize,
+}
+
+impl NodeTable {
+    fn new(max_nodes: usize) -> Self {
+        Self {
+            nodes: Mutex::new(VecDeque::new()),
+            max_nodes,
+        }
+    }
+
+    fn add(&self, addr: SocketAddr) {
+        if addr.port() == 0 || addr.ip().is_unspecified() {
+            return;
+        }
+
+        let mut nodes = self.nodes.lock().expect("node table mutex poisoned");
+        if nodes.contains(&addr) {
+            return;
+        }
+        nodes.push_back(addr);
+        while nodes.len() > self.max_nodes {
+            nodes.pop_front();
+        }
+    }
+
+    fn add_many(&self, addrs: impl IntoIterator<Item = SocketAddr>) {
+        for addr in addrs {
+            self.add(addr);
+        }
+    }
+
+    fn sample(&self, family_addr: SocketAddr, limit: usize) -> Vec<SocketAddr> {
+        let nodes = self.nodes.lock().expect("node table mutex poisoned");
+        nodes
+            .iter()
+            .copied()
+            .filter(|addr| addr.is_ipv4() == family_addr.is_ipv4())
+            .take(limit)
+            .collect()
+    }
+
+    fn compact_nodes(&self, family_addr: SocketAddr, limit: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for addr in self.sample(family_addr, limit) {
+            if let SocketAddr::V4(addr) = addr {
+                out.extend_from_slice(&random_id());
+                out.extend_from_slice(&addr.ip().octets());
+                out.extend_from_slice(&addr.port().to_be_bytes());
+            }
+        }
+        out
+    }
+
+    fn len(&self) -> usize {
+        self.nodes.lock().expect("node table mutex poisoned").len()
+    }
+}
+
 pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<()> {
     let mut tasks = Vec::new();
+    let nodes = Arc::new(NodeTable::new(config.routing_table_max_nodes));
+
+    for bootstrap in &config.bootstrap_nodes {
+        nodes.add_many(resolve_addrs(bootstrap).await);
+    }
+
     let v4_config = config.clone();
     let v4_tx = tx.clone();
+    let v4_nodes = nodes.clone();
     tasks.push(tokio::spawn(async move {
-        if let Err(err) =
-            run_listener(v4_config.listen_addr, v4_config.bootstrap_nodes, v4_tx).await
+        if let Err(err) = run_listener(
+            v4_config.listen_addr,
+            v4_config.bootstrap_nodes,
+            v4_nodes,
+            v4_tx,
+        )
+        .await
         {
             warn!(addr = %v4_config.listen_addr, error = %err, "dht listener stopped");
         }
@@ -31,8 +109,9 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
     if let Some(listen_addr_v6) = config.listen_addr_v6 {
         let v6_tx = tx.clone();
         let bootstrap_nodes = config.bootstrap_nodes.clone();
+        let v6_nodes = nodes.clone();
         tasks.push(tokio::spawn(async move {
-            if let Err(err) = run_listener(listen_addr_v6, bootstrap_nodes, v6_tx).await {
+            if let Err(err) = run_listener(listen_addr_v6, bootstrap_nodes, v6_nodes, v6_tx).await {
                 warn!(addr = %listen_addr_v6, error = %err, "dht listener stopped");
             }
         }));
@@ -48,19 +127,28 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
 async fn run_listener(
     listen_addr: SocketAddr,
     bootstrap_nodes: Vec<String>,
+    nodes: Arc<NodeTable>,
     tx: mpsc::Sender<InfoHashEvent>,
 ) -> Result<()> {
     let socket = Arc::new(bind_udp_socket(listen_addr)?);
     let node_id = random_id();
 
     info!(addr = %listen_addr, "dht listener bound");
-    tokio::spawn(bootstrap_loop(socket.clone(), node_id, bootstrap_nodes));
+    tokio::spawn(bootstrap_loop(
+        socket.clone(),
+        node_id,
+        bootstrap_nodes,
+        nodes.clone(),
+    ));
 
     let mut buf = vec![0u8; 4096];
     loop {
         let (len, addr) = socket.recv_from(&mut buf).await?;
         let packet = &buf[..len];
-        if let Err(err) = handle_packet(socket.clone(), node_id, addr, packet, &tx).await {
+        nodes.add(addr);
+        if let Err(err) =
+            handle_packet(socket.clone(), node_id, nodes.clone(), addr, packet, &tx).await
+        {
             debug!(%addr, error = %err, "ignored dht packet");
         }
     }
@@ -133,7 +221,12 @@ pub async fn get_peers(info_hash: [u8; 20], config: &DhtConfig) -> Result<Vec<So
     Ok(unique(peers))
 }
 
-async fn bootstrap_loop(socket: Arc<UdpSocket>, node_id: [u8; 20], nodes: Vec<String>) {
+async fn bootstrap_loop(
+    socket: Arc<UdpSocket>,
+    node_id: [u8; 20],
+    bootstrap_nodes: Vec<String>,
+    nodes: Arc<NodeTable>,
+) {
     let mut ticker = interval(Duration::from_secs(15));
     let local_addr = match socket.local_addr() {
         Ok(addr) => addr,
@@ -145,40 +238,51 @@ async fn bootstrap_loop(socket: Arc<UdpSocket>, node_id: [u8; 20], nodes: Vec<St
 
     loop {
         ticker.tick().await;
-        for node in &nodes {
-            for addr in resolve_addrs(node).await {
-                if addr.is_ipv4() != local_addr.is_ipv4() {
-                    continue;
-                }
+        let mut targets = nodes.sample(local_addr, 96);
+        for node in &bootstrap_nodes {
+            targets.extend(resolve_addrs(node).await);
+        }
+        targets = unique(targets);
 
-                let target = random_id();
-                let request = find_node_request(&node_id, &target);
-                if let Err(err) = socket.send_to(&request, addr).await {
-                    if err.raw_os_error() == Some(101) {
-                        warn!(
-                            local_addr = %local_addr,
-                            node = %addr,
-                            error = %err,
-                            "network unreachable; disabling dht bootstrap for this listener"
-                        );
-                        return;
-                    }
+        for addr in targets {
+            if addr.is_ipv4() != local_addr.is_ipv4() {
+                continue;
+            }
 
+            let target = random_id();
+            let request = find_node_request(&node_id, &target);
+            if let Err(err) = socket.send_to(&request, addr).await {
+                if err.raw_os_error() == Some(101) {
                     warn!(
                         local_addr = %local_addr,
                         node = %addr,
                         error = %err,
-                        "failed to send dht bootstrap request"
+                        "network unreachable; disabling dht bootstrap for this listener"
                     );
+                    return;
                 }
+
+                warn!(
+                    local_addr = %local_addr,
+                    node = %addr,
+                    error = %err,
+                    "failed to send dht bootstrap request"
+                );
             }
         }
+
+        debug!(
+            local_addr = %local_addr,
+            nodes = nodes.len(),
+            "dht bootstrap round complete"
+        );
     }
 }
 
 async fn handle_packet(
     socket: Arc<UdpSocket>,
     node_id: [u8; 20],
+    nodes: Arc<NodeTable>,
     addr: SocketAddr,
     packet: &[u8],
     tx: &mpsc::Sender<InfoHashEvent>,
@@ -188,8 +292,17 @@ async fn handle_packet(
         return Ok(());
     };
 
-    let transaction = dict_get(&dict, b"t").and_then(as_bytes).unwrap_or(b"");
     let y = dict_get(&dict, b"y").and_then(as_bytes).unwrap_or(b"");
+    if y == b"r" {
+        if let Some(Value::Dict(response)) = dict_get(&dict, b"r") {
+            if let Some(bytes) = dict_get(response, b"nodes").and_then(as_bytes) {
+                nodes.add_many(parse_compact_nodes(bytes));
+            }
+        }
+        return Ok(());
+    }
+
+    let transaction = dict_get(&dict, b"t").and_then(as_bytes).unwrap_or(b"");
     if y != b"q" {
         return Ok(());
     }
@@ -207,7 +320,10 @@ async fn handle_packet(
         }
         b"find_node" => {
             let mut extra = BTreeMap::new();
-            extra.insert(b"nodes".to_vec(), Value::Bytes(Vec::new()));
+            extra.insert(
+                b"nodes".to_vec(),
+                Value::Bytes(nodes.compact_nodes(addr, 8)),
+            );
             let response = response(transaction, node_id, extra);
             socket.send_to(&response, addr).await?;
         }
@@ -216,6 +332,7 @@ async fn handle_packet(
                 .and_then(as_bytes)
                 .and_then(to_hash)
             {
+                info!(info_hash = %hex::encode(hash), source = "get_peers", "discovered info_hash");
                 let _ = tx
                     .send(InfoHashEvent {
                         info_hash: hash,
@@ -227,7 +344,10 @@ async fn handle_packet(
             }
             let mut extra = BTreeMap::new();
             extra.insert(b"token".to_vec(), Value::Bytes(b"dht-lens".to_vec()));
-            extra.insert(b"nodes".to_vec(), Value::Bytes(Vec::new()));
+            extra.insert(
+                b"nodes".to_vec(),
+                Value::Bytes(nodes.compact_nodes(addr, 8)),
+            );
             let response = response(transaction, node_id, extra);
             socket.send_to(&response, addr).await?;
         }
@@ -236,6 +356,7 @@ async fn handle_packet(
                 .and_then(as_bytes)
                 .and_then(to_hash)
             {
+                info!(info_hash = %hex::encode(hash), source = "announce_peer", "discovered info_hash");
                 let _ = tx
                     .send(InfoHashEvent {
                         info_hash: hash,
