@@ -108,11 +108,13 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
     let v4_tx = tx.clone();
     let v4_nodes = nodes.clone();
     let v4_virtual_node_count = config.virtual_nodes;
+    let v4_bootstrap_query_limit = config.bootstrap_query_limit;
     tasks.push(tokio::spawn(async move {
         if let Err(err) = run_listener(
             v4_config.listen_addr,
             v4_config.bootstrap_nodes,
             v4_virtual_node_count,
+            v4_bootstrap_query_limit,
             v4_nodes,
             v4_tx,
         )
@@ -127,11 +129,13 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
         let bootstrap_nodes = config.bootstrap_nodes.clone();
         let v6_nodes = nodes.clone();
         let v6_virtual_node_count = config.virtual_nodes;
+        let v6_bootstrap_query_limit = config.bootstrap_query_limit;
         tasks.push(tokio::spawn(async move {
             if let Err(err) = run_listener(
                 listen_addr_v6,
                 bootstrap_nodes,
                 v6_virtual_node_count,
+                v6_bootstrap_query_limit,
                 v6_nodes,
                 v6_tx,
             )
@@ -153,6 +157,7 @@ async fn run_listener(
     listen_addr: SocketAddr,
     bootstrap_nodes: Vec<String>,
     virtual_node_count: usize,
+    bootstrap_query_limit: usize,
     nodes: Arc<NodeTable>,
     tx: mpsc::Sender<InfoHashEvent>,
 ) -> Result<()> {
@@ -167,6 +172,7 @@ async fn run_listener(
         socket.clone(),
         node_ids.clone(),
         bootstrap_nodes,
+        bootstrap_query_limit,
         nodes.clone(),
     ));
 
@@ -261,6 +267,7 @@ async fn bootstrap_loop(
     socket: Arc<UdpSocket>,
     node_ids: Arc<[[u8; 20]]>,
     bootstrap_nodes: Vec<String>,
+    bootstrap_query_limit: usize,
     nodes: Arc<NodeTable>,
 ) {
     let mut ticker = interval(Duration::from_secs(15));
@@ -277,7 +284,7 @@ async fn bootstrap_loop(
     loop {
         round += 1;
         ticker.tick().await;
-        let mut targets = nodes.sample(local_addr, 96);
+        let mut targets = nodes.sample(local_addr, bootstrap_query_limit);
         for node in &bootstrap_nodes {
             targets.extend(resolve_addrs(node).await);
         }

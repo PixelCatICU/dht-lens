@@ -8,7 +8,8 @@ bootstrap_nodes = [
 ]
 max_inflight_queries = 10000
 routing_table_max_nodes = 50000
-virtual_nodes = 128
+bootstrap_query_limit = 512
+virtual_nodes = 512
 
 [metadata]
 max_concurrent_fetches = 1000
