@@ -37,7 +37,11 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
         if short_seen
             .get(&event.info_hash)
             .is_some_and(|(seen_at, seen_with_peer)| {
-                now - *seen_at < 1_800 && (*seen_with_peer || !event_has_peer)
+                if !event_has_peer {
+                    now - *seen_at < 1_800
+                } else {
+                    *seen_with_peer && now - *seen_at < 300
+                }
             })
         {
             continue;
