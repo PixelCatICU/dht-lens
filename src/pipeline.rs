@@ -22,7 +22,7 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
     });
 
     let semaphore = Arc::new(Semaphore::new(config.metadata.max_concurrent_fetches));
-    let mut short_seen: HashMap<[u8; 20], i64> = HashMap::new();
+    let mut short_seen: HashMap<[u8; 20], (i64, bool)> = HashMap::new();
 
     info!(
         result_queue_size = config.pipeline.result_queue_size,
@@ -32,15 +32,18 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
     );
     while let Some(event) = hash_rx.recv().await {
         let now = now_ts();
+        let event_has_peer = event.peer.is_some();
         if short_seen
             .get(&event.info_hash)
-            .is_some_and(|seen_at| now - seen_at < 1_800)
+            .is_some_and(|(seen_at, seen_with_peer)| {
+                now - *seen_at < 1_800 && (*seen_with_peer || !event_has_peer)
+            })
         {
             continue;
         }
-        short_seen.insert(event.info_hash, now);
+        short_seen.insert(event.info_hash, (now, event_has_peer));
         if short_seen.len() > 500_000 {
-            short_seen.retain(|_, seen_at| now - *seen_at < 1_800);
+            short_seen.retain(|_, (seen_at, _)| now - *seen_at < 1_800);
         }
 
         let permit = semaphore.clone().acquire_owned().await?;
