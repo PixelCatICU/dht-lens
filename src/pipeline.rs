@@ -106,7 +106,10 @@ async fn fetch_from_first_peer(
     for peer in peers {
         match fetch_from_peer(*peer, info_hash, &config.metadata).await {
             Ok(metadata) => return Ok(metadata),
-            Err(err) => debug!(%peer, error = %err, "metadata peer failed"),
+            Err(err) => {
+                info!(%peer, error = %err, "metadata peer failed");
+                debug!(%peer, error = %err, "metadata peer failed");
+            }
         }
     }
     anyhow::bail!("no usable peers for metadata")
