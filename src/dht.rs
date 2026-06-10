@@ -1,6 +1,6 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
-    net::SocketAddr,
+    collections::{BTreeMap, HashSet, VecDeque},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{Arc, Mutex},
 };
 
@@ -217,18 +217,32 @@ pub async fn get_peers(info_hash: [u8; 20], config: &DhtConfig) -> Result<Vec<So
     let socket = UdpSocket::bind("0.0.0.0:0").await?;
     let node_id = random_id();
     let mut peers = Vec::new();
-    let mut nodes = Vec::new();
+    let mut pending = VecDeque::new();
+    let mut queued = HashSet::new();
+    let mut queried_nodes = HashSet::new();
 
     for bootstrap in &config.bootstrap_nodes {
-        nodes.extend(resolve_addrs(bootstrap).await);
+        for addr in resolve_addrs(bootstrap).await {
+            if queued.insert(addr) {
+                pending.push_back(addr);
+            }
+        }
     }
 
-    let deadline = Instant::now() + Duration::from_secs(6);
+    let deadline = Instant::now() + Duration::from_secs(15);
     let mut queried = 0usize;
     let mut buf = vec![0u8; 4096];
 
     while Instant::now() < deadline && queried < config.max_inflight_queries.min(256) {
-        let batch: Vec<_> = nodes.drain(..nodes.len().min(32)).collect();
+        let mut batch = Vec::new();
+        while batch.len() < 64 {
+            let Some(node) = pending.pop_front() else {
+                break;
+            };
+            if queried_nodes.insert(node) {
+                batch.push(node);
+            }
+        }
         if batch.is_empty() {
             break;
         }
@@ -239,23 +253,32 @@ pub async fn get_peers(info_hash: [u8; 20], config: &DhtConfig) -> Result<Vec<So
             queried += 1;
         }
 
-        let read_until = Instant::now() + Duration::from_millis(700);
+        let read_until = Instant::now() + Duration::from_millis(3_000);
         while Instant::now() < read_until {
-            match timeout(Duration::from_millis(120), socket.recv_from(&mut buf)).await {
+            match timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await {
                 Ok(Ok((len, _))) => {
                     if let Ok((mut found_peers, mut found_nodes)) =
                         parse_get_peers_response(&buf[..len])
                     {
+                        found_peers.retain(is_global_address);
+                        found_nodes.retain(is_global_address);
                         peers.append(&mut found_peers);
                         if peers.len() >= 64 {
                             peers.truncate(64);
                             return Ok(unique(peers));
                         }
-                        nodes.append(&mut found_nodes);
-                        nodes.truncate(config.routing_table_max_nodes.min(2_000));
+                        for node in found_nodes.drain(..) {
+                            if queued.insert(node) {
+                                pending.push_back(node);
+                            }
+                        }
+                        while pending.len() > config.routing_table_max_nodes.min(5_000) {
+                            pending.pop_back();
+                        }
                     }
                 }
-                _ => break,
+                Ok(Err(_)) => break,
+                Err(_) => continue,
             }
         }
     }
@@ -358,6 +381,9 @@ async fn handle_packet(
         if let Some(Value::Dict(response)) = dict_get(&dict, b"r") {
             if let Some(bytes) = dict_get(response, b"nodes").and_then(as_bytes) {
                 nodes.add_many(parse_compact_nodes(bytes));
+            }
+            if let Some(bytes) = dict_get(response, b"nodes6").and_then(as_bytes) {
+                nodes.add_many(parse_compact_nodes6(bytes));
             }
         }
         return Ok(());
@@ -508,11 +534,23 @@ fn parse_get_peers_response(input: &[u8]) -> Result<(Vec<SocketAddr>, Vec<Socket
             }
         }
     }
+    if let Some(Value::List(values)) = dict_get(response, b"values6") {
+        for value in values {
+            if let Some(bytes) = as_bytes(value) {
+                peers.extend(parse_compact_peers6(bytes));
+            }
+        }
+    }
 
-    let nodes = dict_get(response, b"nodes")
+    let mut nodes = dict_get(response, b"nodes")
         .and_then(as_bytes)
         .map(parse_compact_nodes)
         .unwrap_or_default();
+    let mut nodes6 = dict_get(response, b"nodes6")
+        .and_then(as_bytes)
+        .map(parse_compact_nodes6)
+        .unwrap_or_default();
+    nodes.append(&mut nodes6);
 
     Ok((peers, nodes))
 }
@@ -537,6 +575,72 @@ fn parse_compact_nodes(bytes: &[u8]) -> Vec<SocketAddr> {
             (port != 0).then_some(SocketAddr::new(ip.into(), port))
         })
         .collect()
+}
+
+fn parse_compact_peers6(bytes: &[u8]) -> Vec<SocketAddr> {
+    bytes
+        .chunks_exact(18)
+        .filter_map(|chunk| {
+            let ip = Ipv6Addr::new(
+                u16::from_be_bytes([chunk[0], chunk[1]]),
+                u16::from_be_bytes([chunk[2], chunk[3]]),
+                u16::from_be_bytes([chunk[4], chunk[5]]),
+                u16::from_be_bytes([chunk[6], chunk[7]]),
+                u16::from_be_bytes([chunk[8], chunk[9]]),
+                u16::from_be_bytes([chunk[10], chunk[11]]),
+                u16::from_be_bytes([chunk[12], chunk[13]]),
+                u16::from_be_bytes([chunk[14], chunk[15]]),
+            );
+            let port = u16::from_be_bytes([chunk[16], chunk[17]]);
+            (port != 0).then_some(SocketAddr::new(ip.into(), port))
+        })
+        .collect()
+}
+
+fn parse_compact_nodes6(bytes: &[u8]) -> Vec<SocketAddr> {
+    bytes
+        .chunks_exact(38)
+        .filter_map(|chunk| {
+            let ip = Ipv6Addr::new(
+                u16::from_be_bytes([chunk[20], chunk[21]]),
+                u16::from_be_bytes([chunk[22], chunk[23]]),
+                u16::from_be_bytes([chunk[24], chunk[25]]),
+                u16::from_be_bytes([chunk[26], chunk[27]]),
+                u16::from_be_bytes([chunk[28], chunk[29]]),
+                u16::from_be_bytes([chunk[30], chunk[31]]),
+                u16::from_be_bytes([chunk[32], chunk[33]]),
+                u16::from_be_bytes([chunk[34], chunk[35]]),
+            );
+            let port = u16::from_be_bytes([chunk[36], chunk[37]]);
+            (port != 0).then_some(SocketAddr::new(ip.into(), port))
+        })
+        .collect()
+}
+
+fn is_global_address(addr: &SocketAddr) -> bool {
+    match addr.ip() {
+        IpAddr::V4(ip) => is_public_v4(ip),
+        IpAddr::V6(ip) => is_public_v6(ip),
+    }
+}
+
+fn is_public_v4(ip: Ipv4Addr) -> bool {
+    !(ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_multicast()
+        || ip.is_link_local()
+        || ip.is_broadcast())
+}
+
+fn is_public_v6(ip: Ipv6Addr) -> bool {
+    !(
+        ip.is_unspecified()
+            || ip.is_loopback()
+            || ip.is_multicast()
+            || ip.is_unicast_link_local()
+            || ip.is_unique_local()
+    )
 }
 
 async fn resolve_addrs(addr: &str) -> Vec<SocketAddr> {
@@ -604,7 +708,9 @@ fn announce_peer_addr(args: &BTreeMap<Vec<u8>, Value>, addr: SocketAddr) -> Opti
             u16::try_from(port).ok()?
         }
     };
-    (port != 0).then_some(SocketAddr::new(addr.ip(), port))
+    (port != 0)
+        .then_some(SocketAddr::new(addr.ip(), port))
+        .filter(|addr| is_global_address(addr))
 }
 
 fn to_hash(bytes: &[u8]) -> Option<[u8; 20]> {

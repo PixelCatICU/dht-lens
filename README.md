@@ -127,6 +127,22 @@ dht-lens migrate
 dht-lens crawl --print
 ```
 
+## CapRover recovery when panel is unreachable
+
+If `https://captain.vlist.cyou` returns 502, run once on the CapRover node:
+
+```bash
+export CAPROVER_SERVICE_NAME=captain-captain
+export CAPROVER_PANEL_HOST=captain.vlist.cyou
+./scripts/fix-caprover-access.sh
+```
+
+This sets:
+
+- `DOCKER_API_VERSION=1.40` for the CapRover container (compatible with newer Docker API).
+- endpoint mode to `dnsrr` so nginx can resolve `captain-captain` to task IPs instead of failing VIP route.
+- a short health check of `/checkhealth`.
+
 CapRover's normal HTTP routing does not automatically publish UDP DHT traffic.
 For best DHT listener performance, expose UDP `6881` on the host or run this
 service on a host/network where inbound UDP is reachable. The crawler still

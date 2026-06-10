@@ -1,6 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use anyhow::Result;
+use rand::seq::SliceRandom;
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, info, warn};
 
@@ -70,6 +71,7 @@ async fn process_hash(
     peers.extend(crate::dht::get_peers(event.info_hash, &config.dht).await?);
     peers.sort_unstable();
     peers.dedup();
+    peers.shuffle(&mut rand::thread_rng());
     event.peer_count = peers.len() as u32;
     info!(
         info_hash = %info_hash_hex,
@@ -103,7 +105,8 @@ async fn fetch_from_first_peer(
     info_hash: [u8; 20],
     config: &AppConfig,
 ) -> Result<ParsedMetadata> {
-    for peer in peers {
+    let max_attempts = peers.len().min(16);
+    for peer in peers.iter().take(max_attempts) {
         match fetch_from_peer(*peer, info_hash, &config.metadata).await {
             Ok(metadata) => return Ok(metadata),
             Err(err) => {
