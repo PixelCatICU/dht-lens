@@ -48,8 +48,9 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
         let store = store.clone();
         tokio::spawn(async move {
             let _permit = permit;
+            let info_hash = hex::encode(event.info_hash);
             if let Err(err) = process_hash(event, config, store).await {
-                debug!(error = %err, "info_hash dropped");
+                info!(%info_hash, error = %err, "info_hash dropped");
             }
         });
     }
@@ -61,10 +62,27 @@ async fn process_hash(
     config: AppConfig,
     store: Option<Arc<LibsqlStore>>,
 ) -> Result<()> {
-    let peers = crate::dht::get_peers(event.info_hash, &config.dht).await?;
+    let info_hash_hex = hex::encode(event.info_hash);
+    let mut peers: Vec<_> = event.peer.into_iter().collect();
+    peers.extend(crate::dht::get_peers(event.info_hash, &config.dht).await?);
+    peers.sort_unstable();
+    peers.dedup();
     event.peer_count = peers.len() as u32;
+    info!(
+        info_hash = %info_hash_hex,
+        peer_count = event.peer_count,
+        source = ?event.source,
+        "processing info_hash"
+    );
     let metadata = fetch_from_first_peer(&peers, event.info_hash, &config).await?;
     let record = build_record(event, metadata, &config);
+    info!(
+        info_hash = %record.info_hash,
+        name = %record.name,
+        total_size = record.total_size,
+        file_count = record.file_count,
+        "metadata fetched"
+    );
 
     if config.pipeline.print_jsonl {
         println!("{}", serde_json::to_string(&record)?);

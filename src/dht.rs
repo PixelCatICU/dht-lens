@@ -15,7 +15,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    bencode::{Value, as_bytes, dict_get, encode, parse},
+    bencode::{Value, as_bytes, as_int, dict_get, encode, parse},
     config::DhtConfig,
     model::{InfoHashEvent, Source, now_ts},
 };
@@ -398,6 +398,7 @@ async fn handle_packet(
                         info_hash: hash,
                         source: Source::DhtGetPeers,
                         peer_count: 0,
+                        peer: None,
                         seen_at: now_ts(),
                     })
                     .await;
@@ -422,12 +423,14 @@ async fn handle_packet(
                 .and_then(to_hash)
             {
                 let node_id = closest_node_id(&node_ids, &hash);
-                info!(info_hash = %hex::encode(hash), source = "announce_peer", "discovered info_hash");
+                let peer = announce_peer_addr(args, addr);
+                info!(info_hash = %hex::encode(hash), source = "announce_peer", ?peer, "discovered info_hash");
                 let _ = tx
                     .send(InfoHashEvent {
                         info_hash: hash,
                         source: Source::DhtAnnouncePeer,
-                        peer_count: 1,
+                        peer_count: peer.is_some() as u32,
+                        peer,
                         seen_at: now_ts(),
                     })
                     .await;
@@ -584,6 +587,17 @@ fn xor_distance(left: &[u8; 20], right: &[u8; 20]) -> [u8; 20] {
         *byte = left[index] ^ right[index];
     }
     distance
+}
+
+fn announce_peer_addr(args: &BTreeMap<Vec<u8>, Value>, addr: SocketAddr) -> Option<SocketAddr> {
+    let port = match dict_get(args, b"implied_port").and_then(as_int) {
+        Some(1) => addr.port(),
+        _ => {
+            let port = dict_get(args, b"port").and_then(as_int)?;
+            u16::try_from(port).ok()?
+        }
+    };
+    (port != 0).then_some(SocketAddr::new(addr.ip(), port))
 }
 
 fn to_hash(bytes: &[u8]) -> Option<[u8; 20]> {

@@ -43,6 +43,7 @@ pub struct InfoHashEvent {
     pub info_hash: [u8; 20],
     pub source: Source,
     pub peer_count: u32,
+    pub peer: Option<std::net::SocketAddr>,
     pub seen_at: i64,
 }
 
