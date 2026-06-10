@@ -109,7 +109,7 @@ async fn fetch_from_first_peer(
     info_hash: [u8; 20],
     config: &AppConfig,
 ) -> Result<ParsedMetadata> {
-    let max_attempts = peers.len().min(16);
+    let max_attempts = peers.len().min(8);
     for peer in peers.iter().take(max_attempts) {
         match fetch_from_peer(*peer, info_hash, &config.metadata).await {
             Ok(metadata) => return Ok(metadata),
