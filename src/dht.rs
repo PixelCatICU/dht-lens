@@ -109,12 +109,14 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
     let v4_nodes = nodes.clone();
     let v4_virtual_node_count = config.virtual_nodes;
     let v4_bootstrap_query_limit = config.bootstrap_query_limit;
+    let v4_get_peers_probe_count = config.get_peers_probe_count;
     tasks.push(tokio::spawn(async move {
         if let Err(err) = run_listener(
             v4_config.listen_addr,
             v4_config.bootstrap_nodes,
             v4_virtual_node_count,
             v4_bootstrap_query_limit,
+            v4_get_peers_probe_count,
             v4_nodes,
             v4_tx,
         )
@@ -130,12 +132,14 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
         let v6_nodes = nodes.clone();
         let v6_virtual_node_count = config.virtual_nodes;
         let v6_bootstrap_query_limit = config.bootstrap_query_limit;
+        let v6_get_peers_probe_count = config.get_peers_probe_count;
         tasks.push(tokio::spawn(async move {
             if let Err(err) = run_listener(
                 listen_addr_v6,
                 bootstrap_nodes,
                 v6_virtual_node_count,
                 v6_bootstrap_query_limit,
+                v6_get_peers_probe_count,
                 v6_nodes,
                 v6_tx,
             )
@@ -158,6 +162,7 @@ async fn run_listener(
     bootstrap_nodes: Vec<String>,
     virtual_node_count: usize,
     bootstrap_query_limit: usize,
+    get_peers_probe_count: usize,
     nodes: Arc<NodeTable>,
     tx: mpsc::Sender<InfoHashEvent>,
 ) -> Result<()> {
@@ -187,6 +192,7 @@ async fn run_listener(
             nodes.clone(),
             addr,
             packet,
+            get_peers_probe_count,
             &tx,
         )
         .await
@@ -309,6 +315,7 @@ async fn handle_packet(
     nodes: Arc<NodeTable>,
     addr: SocketAddr,
     packet: &[u8],
+    get_peers_probe_count: usize,
     tx: &mpsc::Sender<InfoHashEvent>,
 ) -> Result<()> {
     let value = parse(packet)?;
@@ -316,6 +323,7 @@ async fn handle_packet(
         return Ok(());
     };
 
+    let transaction = dict_get(&dict, b"t").and_then(as_bytes).unwrap_or(b"");
     let y = dict_get(&dict, b"y").and_then(as_bytes).unwrap_or(b"");
     if y == b"r" {
         if let Some(Value::Dict(response)) = dict_get(&dict, b"r") {
@@ -325,11 +333,24 @@ async fn handle_packet(
             if let Some(bytes) = dict_get(response, b"nodes6").and_then(as_bytes) {
                 nodes.add_many(parse_compact_nodes6(bytes));
             }
+            if let Some(hash) = active_get_peers_hash(transaction) {
+                for peer in parse_compact_peer_values(response) {
+                    let _ = tx
+                        .send(InfoHashEvent {
+                            info_hash: hash,
+                            source: Source::DhtGetPeers,
+                            peer_count: 1,
+                            peer: Some(peer),
+                            seed_nodes: Vec::new(),
+                            seen_at: now_ts(),
+                        })
+                        .await;
+                }
+            }
         }
         return Ok(());
     }
 
-    let transaction = dict_get(&dict, b"t").and_then(as_bytes).unwrap_or(b"");
     if y != b"q" {
         return Ok(());
     }
@@ -376,6 +397,17 @@ async fn handle_packet(
                         seen_at: now_ts(),
                     })
                     .await;
+                if get_peers_probe_count > 0 {
+                    probe_get_peers(
+                        socket.clone(),
+                        node_ids.clone(),
+                        nodes.clone(),
+                        addr,
+                        hash,
+                        get_peers_probe_count,
+                    )
+                    .await;
+                }
             }
             let node_id = dict_get(args, b"info_hash")
                 .and_then(as_bytes)
@@ -438,6 +470,65 @@ fn find_node_request(node_id: &[u8; 20], target: &[u8; 20]) -> Vec<u8> {
     out
 }
 
+async fn probe_get_peers(
+    socket: Arc<UdpSocket>,
+    node_ids: Arc<[[u8; 20]]>,
+    nodes: Arc<NodeTable>,
+    addr: SocketAddr,
+    info_hash: [u8; 20],
+    probe_count: usize,
+) {
+    let mut targets = Vec::with_capacity(probe_count.max(1));
+    targets.push(addr);
+    if probe_count > 1 {
+        targets.extend(nodes.sample(addr, probe_count - 1));
+    }
+    for target in unique(targets)
+        .into_iter()
+        .filter(|target| target.is_ipv4() == addr.is_ipv4() && is_global_address(target))
+        .take(probe_count)
+    {
+        let node_id = closest_node_id(&node_ids, &info_hash);
+        let request = get_peers_request(&node_id, &info_hash);
+        if let Err(err) = socket.send_to(&request, target).await {
+            debug!(%target, error = %err, "failed to send active get_peers request");
+        }
+    }
+}
+
+fn get_peers_request(node_id: &[u8; 20], info_hash: &[u8; 20]) -> Vec<u8> {
+    let mut args = BTreeMap::new();
+    args.insert(b"id".to_vec(), Value::Bytes(node_id.to_vec()));
+    args.insert(b"info_hash".to_vec(), Value::Bytes(info_hash.to_vec()));
+
+    let mut root = BTreeMap::new();
+    root.insert(
+        b"t".to_vec(),
+        Value::Bytes(active_get_peers_transaction(info_hash)),
+    );
+    root.insert(b"y".to_vec(), Value::Bytes(b"q".to_vec()));
+    root.insert(b"q".to_vec(), Value::Bytes(b"get_peers".to_vec()));
+    root.insert(b"a".to_vec(), Value::Dict(args));
+
+    let mut out = Vec::new();
+    encode(&Value::Dict(root), &mut out);
+    out
+}
+
+fn active_get_peers_transaction(info_hash: &[u8; 20]) -> Vec<u8> {
+    let mut transaction = Vec::with_capacity(21);
+    transaction.push(b'g');
+    transaction.extend_from_slice(info_hash);
+    transaction
+}
+
+fn active_get_peers_hash(transaction: &[u8]) -> Option<[u8; 20]> {
+    if transaction.len() != 21 || transaction.first() != Some(&b'g') {
+        return None;
+    }
+    to_hash(&transaction[1..])
+}
+
 fn parse_compact_nodes(bytes: &[u8]) -> Vec<SocketAddr> {
     bytes
         .chunks_exact(26)
@@ -464,6 +555,30 @@ fn parse_compact_nodes6(bytes: &[u8]) -> Vec<SocketAddr> {
                 u16::from_be_bytes([chunk[34], chunk[35]]),
             );
             let port = u16::from_be_bytes([chunk[36], chunk[37]]);
+            (port != 0).then_some(SocketAddr::new(ip.into(), port))
+        })
+        .collect()
+}
+
+fn parse_compact_peer_values(response: &BTreeMap<Vec<u8>, Value>) -> Vec<SocketAddr> {
+    let Some(Value::List(values)) = dict_get(response, b"values") else {
+        return Vec::new();
+    };
+
+    values
+        .iter()
+        .filter_map(as_bytes)
+        .flat_map(parse_compact_peers)
+        .filter(is_global_address)
+        .collect()
+}
+
+fn parse_compact_peers(bytes: &[u8]) -> Vec<SocketAddr> {
+    bytes
+        .chunks_exact(6)
+        .filter_map(|chunk| {
+            let ip = std::net::Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
+            let port = u16::from_be_bytes([chunk[4], chunk[5]]);
             (port != 0).then_some(SocketAddr::new(ip.into(), port))
         })
         .collect()

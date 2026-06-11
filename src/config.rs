@@ -17,6 +17,7 @@ pub struct DhtConfig {
     pub listen_addr_v6: Option<SocketAddr>,
     pub bootstrap_nodes: Vec<String>,
     pub bootstrap_query_limit: usize,
+    pub get_peers_probe_count: usize,
     pub routing_table_max_nodes: usize,
     pub virtual_nodes: usize,
 }
@@ -94,6 +95,7 @@ impl AppConfig {
                 bootstrap_nodes,
                 bootstrap_query_limit: env_usize("DHT_BOOTSTRAP_QUERY_LIMIT", 1024)
                     .clamp(16, 8_192),
+                get_peers_probe_count: env_usize("DHT_GET_PEERS_PROBE_COUNT", 4).clamp(0, 64),
                 routing_table_max_nodes: env_usize("DHT_ROUTING_TABLE_MAX_NODES", 200_000),
                 virtual_nodes: env_usize("DHT_VIRTUAL_NODES", 512).clamp(1, 4_096),
             },
