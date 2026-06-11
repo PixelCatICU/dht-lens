@@ -6,7 +6,6 @@ bootstrap_nodes = [
   "dht.transmissionbt.com:6881",
   "router.utorrent.com:6881"
 ]
-max_inflight_queries = 10000
 routing_table_max_nodes = 100000
 bootstrap_query_limit = 512
 virtual_nodes = 512

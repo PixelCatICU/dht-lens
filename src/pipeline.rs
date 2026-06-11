@@ -74,8 +74,17 @@ async fn process_hash(
     store: Option<Arc<LibsqlStore>>,
 ) -> Result<()> {
     let info_hash_hex = hex::encode(event.info_hash);
-    let mut peers: Vec<_> = event.peer.into_iter().collect();
-    peers.extend(crate::dht::get_peers(event.info_hash, &config.dht, &event.seed_nodes).await?);
+    let Some(primary_peer) = event.peer else {
+        debug!(
+            info_hash = %info_hash_hex,
+            source = ?event.source,
+            seed_nodes = event.seed_nodes.len(),
+            "info_hash observed without peer; skipping metadata fetch"
+        );
+        return Ok(());
+    };
+
+    let mut peers = vec![primary_peer];
     peers.sort_unstable();
     peers.dedup();
     peers.shuffle(&mut rand::thread_rng());

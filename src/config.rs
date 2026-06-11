@@ -17,7 +17,6 @@ pub struct DhtConfig {
     pub listen_addr_v6: Option<SocketAddr>,
     pub bootstrap_nodes: Vec<String>,
     pub bootstrap_query_limit: usize,
-    pub max_inflight_queries: usize,
     pub routing_table_max_nodes: usize,
     pub virtual_nodes: usize,
 }
@@ -92,7 +91,6 @@ impl AppConfig {
                 listen_addr_v6,
                 bootstrap_nodes,
                 bootstrap_query_limit: env_usize("DHT_BOOTSTRAP_QUERY_LIMIT", 512).clamp(16, 4_096),
-                max_inflight_queries: env_usize("DHT_MAX_INFLIGHT_QUERIES", 10_000),
                 routing_table_max_nodes: env_usize("DHT_ROUTING_TABLE_MAX_NODES", 100_000),
                 virtual_nodes: env_usize("DHT_VIRTUAL_NODES", 512).clamp(1, 4_096),
             },

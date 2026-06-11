@@ -6,7 +6,8 @@ The first version runs as a single-node long-lived service:
 
 - listens on public Mainline DHT
 - discovers `info_hash` from `get_peers` and `announce_peer`
-- actively queries DHT peers for the discovered hash
+- uses `get_peers` traffic for discovery and node table growth
+- fetches metadata from public `announce_peer` addresses
 - fetches BEP 9 torrent metadata from peers
 - parses `name`, `total_size`, and file list
 - prints JSONL
@@ -32,13 +33,13 @@ DHT_LISTEN_ADDR=0.0.0.0:6881
 DHT_LISTEN_ADDR_V6=[::]:6881
 DHT_BOOTSTRAP_QUERY_LIMIT=512
 DHT_VIRTUAL_NODES=512
-DHT_MAX_INFLIGHT_QUERIES=10000
-DHT_ROUTING_TABLE_MAX_NODES=50000
+DHT_ROUTING_TABLE_MAX_NODES=100000
 METADATA_MAX_CONCURRENT_FETCHES=1000
+METADATA_MAX_PEERS_PER_HASH=32
 METADATA_CONNECT_TIMEOUT_SECS=5
-METADATA_TIMEOUT_SECS=15
+METADATA_TIMEOUT_SECS=3
 METADATA_MAX_SIZE_MB=8
-INFO_HASH_QUEUE_SIZE=200000
+INFO_HASH_QUEUE_SIZE=10000
 PRINT_JSONL=true
 STORAGE_ENABLED=true
 DB_BATCH_SIZE=100

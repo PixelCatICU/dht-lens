@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{Arc, Mutex},
 };
@@ -10,7 +10,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{
     net::UdpSocket,
     sync::mpsc,
-    time::{Duration, Instant, interval, timeout},
+    time::{Duration, interval},
 };
 use tracing::{debug, info, warn};
 
@@ -211,89 +211,6 @@ fn bind_udp_socket(addr: SocketAddr) -> Result<UdpSocket> {
         socket.set_nonblocking(true)?;
         Ok(UdpSocket::from_std(socket.into())?)
     }
-}
-
-pub async fn get_peers(
-    info_hash: [u8; 20],
-    config: &DhtConfig,
-    seed_nodes: &[SocketAddr],
-) -> Result<Vec<SocketAddr>> {
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
-    let node_id = random_id();
-    let mut peers = Vec::new();
-    let mut pending = VecDeque::new();
-    let mut queued = HashSet::new();
-    let mut queried_nodes = HashSet::new();
-
-    for addr in seed_nodes {
-        if addr.is_ipv4() && is_global_address(addr) && queued.insert(*addr) {
-            pending.push_back(*addr);
-        }
-    }
-
-    for bootstrap in &config.bootstrap_nodes {
-        for addr in resolve_addrs(bootstrap).await {
-            if addr.is_ipv4() && queued.insert(addr) {
-                pending.push_back(addr);
-            }
-        }
-    }
-
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut queried = 0usize;
-    let mut buf = vec![0u8; 4096];
-
-    while Instant::now() < deadline && queried < config.max_inflight_queries.min(1_024) {
-        let mut batch = Vec::new();
-        while batch.len() < 64 {
-            let Some(node) = pending.pop_front() else {
-                break;
-            };
-            if queried_nodes.insert(node) {
-                batch.push(node);
-            }
-        }
-        if batch.is_empty() {
-            break;
-        }
-
-        for node in &batch {
-            let request = get_peers_request(&node_id, &info_hash);
-            let _ = socket.send_to(&request, node).await;
-            queried += 1;
-        }
-
-        let read_until = Instant::now() + Duration::from_millis(3_000);
-        while Instant::now() < read_until {
-            match timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await {
-                Ok(Ok((len, _))) => {
-                    if let Ok((mut found_peers, mut found_nodes)) =
-                        parse_get_peers_response(&buf[..len])
-                    {
-                        found_peers.retain(|addr| addr.is_ipv4() && is_global_address(addr));
-                        found_nodes.retain(|addr| addr.is_ipv4() && is_global_address(addr));
-                        peers.append(&mut found_peers);
-                        if peers.len() >= 64 {
-                            peers.truncate(64);
-                            return Ok(unique(peers));
-                        }
-                        for node in found_nodes.drain(..) {
-                            if queued.insert(node) {
-                                pending.push_back(node);
-                            }
-                        }
-                        while pending.len() > config.routing_table_max_nodes.min(10_000) {
-                            pending.pop_back();
-                        }
-                    }
-                }
-                Ok(Err(_)) => break,
-                Err(_) => continue,
-            }
-        }
-    }
-
-    Ok(unique(peers))
 }
 
 fn event_seed_nodes(nodes: &NodeTable, addr: SocketAddr) -> Vec<SocketAddr> {
@@ -521,102 +438,12 @@ fn find_node_request(node_id: &[u8; 20], target: &[u8; 20]) -> Vec<u8> {
     out
 }
 
-fn get_peers_request(node_id: &[u8; 20], info_hash: &[u8; 20]) -> Vec<u8> {
-    let mut args = BTreeMap::new();
-    args.insert(b"id".to_vec(), Value::Bytes(node_id.to_vec()));
-    args.insert(b"info_hash".to_vec(), Value::Bytes(info_hash.to_vec()));
-
-    let mut root = BTreeMap::new();
-    root.insert(b"t".to_vec(), Value::Bytes(random_transaction()));
-    root.insert(b"y".to_vec(), Value::Bytes(b"q".to_vec()));
-    root.insert(b"q".to_vec(), Value::Bytes(b"get_peers".to_vec()));
-    root.insert(b"a".to_vec(), Value::Dict(args));
-
-    let mut out = Vec::new();
-    encode(&Value::Dict(root), &mut out);
-    out
-}
-
-fn parse_get_peers_response(input: &[u8]) -> Result<(Vec<SocketAddr>, Vec<SocketAddr>)> {
-    let value = parse(input)?;
-    let Value::Dict(root) = value else {
-        return Ok((Vec::new(), Vec::new()));
-    };
-    if dict_get(&root, b"y").and_then(as_bytes) != Some(b"r") {
-        return Ok((Vec::new(), Vec::new()));
-    }
-
-    let response = match dict_get(&root, b"r") {
-        Some(Value::Dict(response)) => response,
-        _ => return Ok((Vec::new(), Vec::new())),
-    };
-
-    let mut peers = Vec::new();
-    if let Some(Value::List(values)) = dict_get(response, b"values") {
-        for value in values {
-            if let Some(bytes) = as_bytes(value) {
-                peers.extend(parse_compact_peers(bytes));
-            }
-        }
-    }
-    if let Some(Value::List(values)) = dict_get(response, b"values6") {
-        for value in values {
-            if let Some(bytes) = as_bytes(value) {
-                peers.extend(parse_compact_peers6(bytes));
-            }
-        }
-    }
-
-    let mut nodes = dict_get(response, b"nodes")
-        .and_then(as_bytes)
-        .map(parse_compact_nodes)
-        .unwrap_or_default();
-    let mut nodes6 = dict_get(response, b"nodes6")
-        .and_then(as_bytes)
-        .map(parse_compact_nodes6)
-        .unwrap_or_default();
-    nodes.append(&mut nodes6);
-
-    Ok((peers, nodes))
-}
-
-fn parse_compact_peers(bytes: &[u8]) -> Vec<SocketAddr> {
-    bytes
-        .chunks_exact(6)
-        .filter_map(|chunk| {
-            let ip = std::net::Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
-            let port = u16::from_be_bytes([chunk[4], chunk[5]]);
-            (port != 0).then_some(SocketAddr::new(ip.into(), port))
-        })
-        .collect()
-}
-
 fn parse_compact_nodes(bytes: &[u8]) -> Vec<SocketAddr> {
     bytes
         .chunks_exact(26)
         .filter_map(|chunk| {
             let ip = std::net::Ipv4Addr::new(chunk[20], chunk[21], chunk[22], chunk[23]);
             let port = u16::from_be_bytes([chunk[24], chunk[25]]);
-            (port != 0).then_some(SocketAddr::new(ip.into(), port))
-        })
-        .collect()
-}
-
-fn parse_compact_peers6(bytes: &[u8]) -> Vec<SocketAddr> {
-    bytes
-        .chunks_exact(18)
-        .filter_map(|chunk| {
-            let ip = Ipv6Addr::new(
-                u16::from_be_bytes([chunk[0], chunk[1]]),
-                u16::from_be_bytes([chunk[2], chunk[3]]),
-                u16::from_be_bytes([chunk[4], chunk[5]]),
-                u16::from_be_bytes([chunk[6], chunk[7]]),
-                u16::from_be_bytes([chunk[8], chunk[9]]),
-                u16::from_be_bytes([chunk[10], chunk[11]]),
-                u16::from_be_bytes([chunk[12], chunk[13]]),
-                u16::from_be_bytes([chunk[14], chunk[15]]),
-            );
-            let port = u16::from_be_bytes([chunk[16], chunk[17]]);
             (port != 0).then_some(SocketAddr::new(ip.into(), port))
         })
         .collect()
