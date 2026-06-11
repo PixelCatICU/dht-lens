@@ -19,12 +19,6 @@ pub fn parse(input: &[u8]) -> Result<Value> {
     Ok(value)
 }
 
-pub fn parse_prefix(input: &[u8]) -> Result<(Value, usize)> {
-    let mut parser = Parser { input, pos: 0 };
-    let value = parser.value()?;
-    Ok((value, parser.pos))
-}
-
 pub fn encode(value: &Value, out: &mut Vec<u8>) {
     match value {
         Value::Int(value) => {
@@ -155,24 +149,5 @@ impl Parser<'_> {
         }
         self.pos += 1;
         Ok(Value::Dict(dict))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Value, as_int, dict_get, parse_prefix};
-
-    #[test]
-    fn parse_prefix_ignores_bencode_markers_inside_strings() {
-        let input = b"d8:msg_typei1e5:piecei0eeabcdef";
-        let (value, consumed) = parse_prefix(input).expect("valid prefix dict");
-
-        assert_eq!(consumed, 25);
-        let Value::Dict(dict) = value else {
-            panic!("expected dict");
-        };
-        assert_eq!(dict_get(&dict, b"msg_type").and_then(as_int), Some(1));
-        assert_eq!(dict_get(&dict, b"piece").and_then(as_int), Some(0));
-        assert_eq!(&input[consumed..], b"abcdef");
     }
 }
