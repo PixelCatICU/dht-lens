@@ -1,7 +1,10 @@
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Instant,
 };
 
@@ -33,6 +36,8 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
 
     let semaphore = Arc::new(Semaphore::new(config.metadata.max_concurrent_fetches));
     let db_semaphore = Arc::new(Semaphore::new(config.storage.write_concurrency));
+    let stats = Arc::new(PipelineStats::default());
+    tokio::spawn(pipeline_stats_loop(stats.clone()));
     let mut short_seen: HashMap<[u8; 20], SeenState> = HashMap::new();
     let mut pending: HashMap<[u8; 20], PendingFetch> = HashMap::new();
     let mut flush_tick = interval(Duration::from_millis(100));
@@ -51,8 +56,13 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
                 let Some(event) = event else {
                     break;
                 };
+                stats.events_received.fetch_add(1, Ordering::Relaxed);
+                if event.peer.is_some() {
+                    stats.peer_events.fetch_add(1, Ordering::Relaxed);
+                }
                 let now = now_ts();
                 if should_skip_event(&mut short_seen, &event, now) {
+                    stats.events_skipped.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
                 if event.peer.is_none() {
@@ -75,6 +85,7 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
                         info_hash,
                         &semaphore,
                         &db_semaphore,
+                        &stats,
                         &config,
                         &store,
                     )
@@ -82,12 +93,56 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
                 }
             }
             _ = flush_tick.tick() => {
-                flush_ready_pending(&mut pending, &semaphore, &db_semaphore, &config, &store).await?;
+                flush_ready_pending(&mut pending, &semaphore, &db_semaphore, &stats, &config, &store).await?;
             }
         }
     }
-    flush_all_pending(&mut pending, &semaphore, &db_semaphore, &config, &store).await?;
+    flush_all_pending(
+        &mut pending,
+        &semaphore,
+        &db_semaphore,
+        &stats,
+        &config,
+        &store,
+    )
+    .await?;
     Ok(())
+}
+
+#[derive(Debug, Default)]
+struct PipelineStats {
+    events_received: AtomicU64,
+    events_skipped: AtomicU64,
+    peer_events: AtomicU64,
+    fetch_jobs_started: AtomicU64,
+    peer_fetch_attempts: AtomicU64,
+    peer_fetch_failures: AtomicU64,
+    metadata_success: AtomicU64,
+    metadata_failures: AtomicU64,
+    no_usable_peers: AtomicU64,
+    db_success: AtomicU64,
+    db_failures: AtomicU64,
+}
+
+async fn pipeline_stats_loop(stats: Arc<PipelineStats>) {
+    let mut ticker = interval(Duration::from_secs(60));
+    loop {
+        ticker.tick().await;
+        info!(
+            events_received = stats.events_received.swap(0, Ordering::Relaxed),
+            events_skipped = stats.events_skipped.swap(0, Ordering::Relaxed),
+            peer_events = stats.peer_events.swap(0, Ordering::Relaxed),
+            fetch_jobs_started = stats.fetch_jobs_started.swap(0, Ordering::Relaxed),
+            peer_fetch_attempts = stats.peer_fetch_attempts.swap(0, Ordering::Relaxed),
+            peer_fetch_failures = stats.peer_fetch_failures.swap(0, Ordering::Relaxed),
+            metadata_success = stats.metadata_success.swap(0, Ordering::Relaxed),
+            metadata_failures = stats.metadata_failures.swap(0, Ordering::Relaxed),
+            no_usable_peers = stats.no_usable_peers.swap(0, Ordering::Relaxed),
+            db_success = stats.db_success.swap(0, Ordering::Relaxed),
+            db_failures = stats.db_failures.swap(0, Ordering::Relaxed),
+            "pipeline stats"
+        );
+    }
 }
 
 #[derive(Debug, Default)]
@@ -134,6 +189,7 @@ async fn flush_ready_pending(
     pending: &mut HashMap<[u8; 20], PendingFetch>,
     semaphore: &Arc<Semaphore>,
     db_semaphore: &Arc<Semaphore>,
+    stats: &Arc<PipelineStats>,
     config: &AppConfig,
     store: &Option<Arc<LibsqlStore>>,
 ) -> Result<()> {
@@ -146,7 +202,16 @@ async fn flush_ready_pending(
         .collect();
 
     for info_hash in ready {
-        flush_pending_hash(pending, info_hash, semaphore, db_semaphore, config, store).await?;
+        flush_pending_hash(
+            pending,
+            info_hash,
+            semaphore,
+            db_semaphore,
+            stats,
+            config,
+            store,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -155,12 +220,22 @@ async fn flush_all_pending(
     pending: &mut HashMap<[u8; 20], PendingFetch>,
     semaphore: &Arc<Semaphore>,
     db_semaphore: &Arc<Semaphore>,
+    stats: &Arc<PipelineStats>,
     config: &AppConfig,
     store: &Option<Arc<LibsqlStore>>,
 ) -> Result<()> {
     let hashes: Vec<_> = pending.keys().copied().collect();
     for info_hash in hashes {
-        flush_pending_hash(pending, info_hash, semaphore, db_semaphore, config, store).await?;
+        flush_pending_hash(
+            pending,
+            info_hash,
+            semaphore,
+            db_semaphore,
+            stats,
+            config,
+            store,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -170,6 +245,7 @@ async fn flush_pending_hash(
     info_hash: [u8; 20],
     semaphore: &Arc<Semaphore>,
     db_semaphore: &Arc<Semaphore>,
+    stats: &Arc<PipelineStats>,
     config: &AppConfig,
     store: &Option<Arc<LibsqlStore>>,
 ) -> Result<()> {
@@ -182,20 +258,27 @@ async fn flush_pending_hash(
 
     let permit = semaphore.clone().acquire_owned().await?;
     let db_semaphore = db_semaphore.clone();
+    let stats = stats.clone();
     let config = config.clone();
     let store = store.clone();
     tokio::spawn(async move {
+        stats.fetch_jobs_started.fetch_add(1, Ordering::Relaxed);
         let info_hash = hex::encode(fetch.event.info_hash);
-        let result = fetch_record(fetch.event, fetch.peers, &config).await;
+        let result = fetch_record(fetch.event, fetch.peers, &config, &stats).await;
         drop(permit);
 
         let record = match result {
-            Ok(record) => record,
+            Ok(record) => {
+                stats.metadata_success.fetch_add(1, Ordering::Relaxed);
+                record
+            }
             Err(err) if err.to_string() == "no usable peers for metadata" => {
+                stats.no_usable_peers.fetch_add(1, Ordering::Relaxed);
                 debug!(%info_hash, error = %err, "info_hash dropped");
                 return;
             }
             Err(err) => {
+                stats.metadata_failures.fetch_add(1, Ordering::Relaxed);
                 warn!(%info_hash, error = %err, "info_hash processing failed");
                 return;
             }
@@ -209,10 +292,14 @@ async fn flush_pending_hash(
                         .insert_torrent(&record, config.search.max_name_ngram_len)
                         .await
                     {
+                        stats.db_failures.fetch_add(1, Ordering::Relaxed);
                         warn!(info_hash = %record.info_hash, error = %err, "torrent storage failed");
+                    } else {
+                        stats.db_success.fetch_add(1, Ordering::Relaxed);
                     }
                 }
                 Err(err) => {
+                    stats.db_failures.fetch_add(1, Ordering::Relaxed);
                     warn!(info_hash = %record.info_hash, error = %err, "db semaphore closed")
                 }
             }
@@ -278,6 +365,7 @@ async fn fetch_record(
     mut event: InfoHashEvent,
     mut peers: Vec<SocketAddr>,
     config: &AppConfig,
+    stats: &PipelineStats,
 ) -> Result<TorrentRecord> {
     let info_hash_hex = hex::encode(event.info_hash);
     if peers.is_empty() {
@@ -300,7 +388,7 @@ async fn fetch_record(
         source = ?event.source,
         "processing info_hash"
     );
-    let metadata = fetch_from_first_peer(&peers, event.info_hash, config).await?;
+    let metadata = fetch_from_first_peer(&peers, event.info_hash, config, stats).await?;
     Ok(build_record(event, metadata, config))
 }
 
@@ -319,6 +407,7 @@ async fn fetch_from_first_peer(
     peers: &[SocketAddr],
     info_hash: [u8; 20],
     config: &AppConfig,
+    stats: &PipelineStats,
 ) -> Result<ParsedMetadata> {
     let max_attempts = peers.len().min(config.metadata.max_peers_per_hash);
     let mut tasks = JoinSet::new();
@@ -330,6 +419,7 @@ async fn fetch_from_first_peer(
         let metadata_config = config.metadata.clone();
         let pex_tx = pex_tx.clone();
         spawned_peers.push(peer);
+        stats.peer_fetch_attempts.fetch_add(1, Ordering::Relaxed);
         tasks.spawn(async move {
             (
                 peer,
@@ -347,8 +437,12 @@ async fn fetch_from_first_peer(
                         tasks.abort_all();
                         return Ok(outcome.metadata);
                     }
-                    Some(Ok((peer, Err(err)))) => debug!(%peer, error = %err, "metadata peer failed"),
+                    Some(Ok((peer, Err(err)))) => {
+                        stats.peer_fetch_failures.fetch_add(1, Ordering::Relaxed);
+                        debug!(%peer, error = %err, "metadata peer failed");
+                    }
                     Some(Err(err)) => {
+                        stats.peer_fetch_failures.fetch_add(1, Ordering::Relaxed);
                         debug!(error = %err, "metadata peer task failed");
                     }
                     None => {}
@@ -369,6 +463,7 @@ async fn fetch_from_first_peer(
                     spawned_peers.push(peer);
                     let metadata_config = config.metadata.clone();
                     let (peer_pex_tx, _) = mpsc::unbounded_channel::<Vec<SocketAddr>>();
+                    stats.peer_fetch_attempts.fetch_add(1, Ordering::Relaxed);
                     tasks.spawn(async move {
                         (
                             peer,
