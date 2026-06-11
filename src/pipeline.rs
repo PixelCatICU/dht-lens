@@ -53,15 +53,20 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
                 if should_skip_event(&mut short_seen, &event, now) {
                     continue;
                 }
-                let Some(peer) = event.peer else {
+                if event.peer.is_none() {
                     continue;
-                };
+                }
                 if short_seen.len() > 500_000 {
                     short_seen.retain(|_, state| now - state.last_seen_at < 1_800);
                 }
 
+                let peers = recent_peers_for(
+                    &short_seen,
+                    event.info_hash,
+                    config.metadata.max_peers_per_hash,
+                );
                 if let Some(info_hash) =
-                    add_pending_peer(&mut pending, event, peer, config.metadata.max_peers_per_hash)
+                    add_pending_peers(&mut pending, event, peers, config.metadata.max_peers_per_hash)
                 {
                     flush_pending_hash(
                         &mut pending,
@@ -95,10 +100,10 @@ struct PendingFetch {
     created_at: Instant,
 }
 
-fn add_pending_peer(
+fn add_pending_peers(
     pending: &mut HashMap<[u8; 20], PendingFetch>,
     mut event: InfoHashEvent,
-    peer: SocketAddr,
+    peers: Vec<SocketAddr>,
     max_peers_per_hash: usize,
 ) -> Option<[u8; 20]> {
     let entry = pending.entry(event.info_hash).or_insert_with(|| {
@@ -110,8 +115,13 @@ fn add_pending_peer(
         }
     });
 
-    if !entry.peers.contains(&peer) {
-        entry.peers.push(peer);
+    for peer in peers {
+        if entry.peers.len() >= max_peers_per_hash {
+            break;
+        }
+        if !entry.peers.contains(&peer) {
+            entry.peers.push(peer);
+        }
     }
 
     (entry.peers.len() >= max_peers_per_hash).then_some(entry.event.info_hash)
@@ -213,6 +223,25 @@ fn should_skip_event(
         state.recent_peers.pop_front();
     }
     false
+}
+
+fn recent_peers_for(
+    short_seen: &HashMap<[u8; 20], SeenState>,
+    info_hash: [u8; 20],
+    limit: usize,
+) -> Vec<SocketAddr> {
+    short_seen
+        .get(&info_hash)
+        .map(|state| {
+            state
+                .recent_peers
+                .iter()
+                .rev()
+                .take(limit)
+                .map(|(peer, _)| *peer)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 async fn process_hash(
