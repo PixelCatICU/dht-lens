@@ -32,6 +32,12 @@ Optional runtime settings can be provided through environment variables:
 DHT_LISTEN_ADDR=0.0.0.0:6881
 DHT_LISTEN_ADDR_V6=[::]:6881
 DHT_BOOTSTRAP_QUERY_LIMIT=512
+DHT_GET_PEERS_PROBE_COUNT=0
+DHT_PACKET_WORKERS=8
+DHT_PACKET_QUEUE_SIZE=65536
+DHT_NODE_SHARDS=64
+DHT_CRAWL_MODE=true
+DHT_CRAWL_RESPONSE_NODES=0
 DHT_VIRTUAL_NODES=512
 DHT_ROUTING_TABLE_MAX_NODES=100000
 METADATA_MAX_CONCURRENT_FETCHES=1000
@@ -94,6 +100,12 @@ RUST_LOG=dht_lens=info
 DHT_LISTEN_ADDR=0.0.0.0:6881
 DHT_LISTEN_ADDR_V6=[::]:6881
 DHT_BOOTSTRAP_QUERY_LIMIT=512
+DHT_GET_PEERS_PROBE_COUNT=0
+DHT_PACKET_WORKERS=8
+DHT_PACKET_QUEUE_SIZE=65536
+DHT_NODE_SHARDS=64
+DHT_CRAWL_MODE=true
+DHT_CRAWL_RESPONSE_NODES=0
 DHT_VIRTUAL_NODES=512
 PRINT_JSONL=true
 STORAGE_ENABLED=true
@@ -181,7 +193,8 @@ Example:
 ## Current Boundary
 
 This version implements the crawler pipeline and protocol primitives directly.
-The DHT side is intentionally lightweight: it listens for incoming KRPC queries
-and performs active `get_peers` queries against bootstrap and returned nodes for
-each observed hash. A production crawler should next add a persistent routing
-table, token validation, better node scoring, and batched DB writer flushing.
+The DHT side uses a dedicated UDP reader, packet worker queues, a sharded node
+table, Crawl-mode `get_peers` responses, optional active `get_peers` probes, and
+BEP 11 PeX peer discovery during metadata fetches. A production crawler should
+next add stricter token validation, better node scoring, and live metrics for
+packet drops, queue depth, metadata success rate, and storage latency.

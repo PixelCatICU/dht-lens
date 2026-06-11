@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    hash::{Hash, Hasher},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{Arc, Mutex},
 };
@@ -22,15 +23,21 @@ use crate::{
 
 #[derive(Debug)]
 struct NodeTable {
-    nodes: Mutex<VecDeque<SocketAddr>>,
+    shards: Vec<Mutex<VecDeque<SocketAddr>>>,
     max_nodes: usize,
+    max_nodes_per_shard: usize,
 }
 
 impl NodeTable {
-    fn new(max_nodes: usize) -> Self {
+    fn new(max_nodes: usize, shard_count: usize) -> Self {
+        let shard_count = shard_count.max(1);
+        let max_nodes_per_shard = (max_nodes / shard_count).max(1);
         Self {
-            nodes: Mutex::new(VecDeque::new()),
+            shards: (0..shard_count)
+                .map(|_| Mutex::new(VecDeque::new()))
+                .collect(),
             max_nodes,
+            max_nodes_per_shard,
         }
     }
 
@@ -39,14 +46,16 @@ impl NodeTable {
             return;
         }
 
-        let mut nodes = self.nodes.lock().expect("node table mutex poisoned");
+        let mut nodes = self.shards[self.shard_index(&addr)]
+            .lock()
+            .expect("node table mutex poisoned");
         if let Some(index) = nodes.iter().position(|node| *node == addr) {
             nodes.remove(index);
             nodes.push_back(addr);
             return;
         }
         nodes.push_back(addr);
-        while nodes.len() > self.max_nodes {
+        while nodes.len() > self.max_nodes_per_shard {
             nodes.pop_front();
         }
     }
@@ -58,12 +67,26 @@ impl NodeTable {
     }
 
     fn sample(&self, family_addr: SocketAddr, limit: usize) -> Vec<SocketAddr> {
-        let nodes = self.nodes.lock().expect("node table mutex poisoned");
-        let family_nodes: Vec<_> = nodes
+        let mut family_nodes = Vec::with_capacity(limit.saturating_mul(2).max(64));
+        let start = rand::thread_rng().gen_range(0..self.shards.len());
+        for shard in self
+            .shards
             .iter()
-            .filter(|addr| addr.is_ipv4() == family_addr.is_ipv4())
-            .copied()
-            .collect();
+            .cycle()
+            .skip(start)
+            .take(self.shards.len())
+        {
+            let nodes = shard.lock().expect("node table mutex poisoned");
+            family_nodes.extend(
+                nodes
+                    .iter()
+                    .filter(|addr| addr.is_ipv4() == family_addr.is_ipv4())
+                    .copied(),
+            );
+            if family_nodes.len() >= limit.saturating_mul(4).max(limit) {
+                break;
+            }
+        }
         if family_nodes.len() <= limit {
             return family_nodes;
         }
@@ -92,13 +115,32 @@ impl NodeTable {
     }
 
     fn len(&self) -> usize {
-        self.nodes.lock().expect("node table mutex poisoned").len()
+        self.shards
+            .iter()
+            .map(|shard| shard.lock().expect("node table mutex poisoned").len())
+            .sum::<usize>()
+            .min(self.max_nodes)
     }
+
+    fn shard_index(&self, addr: &SocketAddr) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        addr.hash(&mut hasher);
+        (hasher.finish() as usize) % self.shards.len()
+    }
+}
+
+#[derive(Debug)]
+struct DhtPacket {
+    addr: SocketAddr,
+    bytes: Vec<u8>,
 }
 
 pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<()> {
     let mut tasks = Vec::new();
-    let nodes = Arc::new(NodeTable::new(config.routing_table_max_nodes));
+    let nodes = Arc::new(NodeTable::new(
+        config.routing_table_max_nodes,
+        config.node_shards,
+    ));
 
     for bootstrap in &config.bootstrap_nodes {
         nodes.add_many(resolve_addrs(bootstrap).await);
@@ -110,6 +152,10 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
     let v4_virtual_node_count = config.virtual_nodes;
     let v4_bootstrap_query_limit = config.bootstrap_query_limit;
     let v4_get_peers_probe_count = config.get_peers_probe_count;
+    let v4_packet_workers = config.packet_workers;
+    let v4_packet_queue_size = config.packet_queue_size;
+    let v4_crawl_mode = config.crawl_mode;
+    let v4_crawl_response_nodes = config.crawl_response_nodes;
     tasks.push(tokio::spawn(async move {
         if let Err(err) = run_listener(
             v4_config.listen_addr,
@@ -117,6 +163,10 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
             v4_virtual_node_count,
             v4_bootstrap_query_limit,
             v4_get_peers_probe_count,
+            v4_packet_workers,
+            v4_packet_queue_size,
+            v4_crawl_mode,
+            v4_crawl_response_nodes,
             v4_nodes,
             v4_tx,
         )
@@ -133,6 +183,10 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
         let v6_virtual_node_count = config.virtual_nodes;
         let v6_bootstrap_query_limit = config.bootstrap_query_limit;
         let v6_get_peers_probe_count = config.get_peers_probe_count;
+        let v6_packet_workers = config.packet_workers;
+        let v6_packet_queue_size = config.packet_queue_size;
+        let v6_crawl_mode = config.crawl_mode;
+        let v6_crawl_response_nodes = config.crawl_response_nodes;
         tasks.push(tokio::spawn(async move {
             if let Err(err) = run_listener(
                 listen_addr_v6,
@@ -140,6 +194,10 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
                 v6_virtual_node_count,
                 v6_bootstrap_query_limit,
                 v6_get_peers_probe_count,
+                v6_packet_workers,
+                v6_packet_queue_size,
+                v6_crawl_mode,
+                v6_crawl_response_nodes,
                 v6_nodes,
                 v6_tx,
             )
@@ -163,6 +221,10 @@ async fn run_listener(
     virtual_node_count: usize,
     bootstrap_query_limit: usize,
     get_peers_probe_count: usize,
+    packet_workers: usize,
+    packet_queue_size: usize,
+    crawl_mode: bool,
+    crawl_response_nodes: usize,
     nodes: Arc<NodeTable>,
     tx: mpsc::Sender<InfoHashEvent>,
 ) -> Result<()> {
@@ -172,7 +234,15 @@ async fn run_listener(
         .collect::<Vec<_>>()
         .into();
 
-    info!(addr = %listen_addr, virtual_nodes = node_ids.len(), "dht listener bound");
+    info!(
+        addr = %listen_addr,
+        virtual_nodes = node_ids.len(),
+        packet_workers,
+        packet_queue_size,
+        crawl_mode,
+        crawl_response_nodes,
+        "dht listener bound"
+    );
     tokio::spawn(bootstrap_loop(
         socket.clone(),
         node_ids.clone(),
@@ -181,23 +251,56 @@ async fn run_listener(
         nodes.clone(),
     ));
 
+    let mut packet_senders = Vec::with_capacity(packet_workers);
+    for worker_id in 0..packet_workers {
+        let (packet_tx, mut packet_rx) = mpsc::channel::<DhtPacket>(packet_queue_size);
+        packet_senders.push(packet_tx);
+        let worker_socket = socket.clone();
+        let worker_node_ids = node_ids.clone();
+        let worker_nodes = nodes.clone();
+        let worker_tx = tx.clone();
+        tokio::spawn(async move {
+            while let Some(packet) = packet_rx.recv().await {
+                if let Err(err) = handle_packet(
+                    worker_socket.clone(),
+                    worker_node_ids.clone(),
+                    worker_nodes.clone(),
+                    packet.addr,
+                    &packet.bytes,
+                    get_peers_probe_count,
+                    crawl_mode,
+                    crawl_response_nodes,
+                    &worker_tx,
+                )
+                .await
+                {
+                    debug!(worker_id, addr = %packet.addr, error = %err, "ignored dht packet");
+                }
+            }
+        });
+    }
+
     let mut buf = vec![0u8; 4096];
+    let mut worker_index = 0usize;
+    let mut dropped_packets = 0u64;
     loop {
         let (len, addr) = socket.recv_from(&mut buf).await?;
-        let packet = &buf[..len];
         nodes.add(addr);
-        if let Err(err) = handle_packet(
-            socket.clone(),
-            node_ids.clone(),
-            nodes.clone(),
+        let packet = DhtPacket {
             addr,
-            packet,
-            get_peers_probe_count,
-            &tx,
-        )
-        .await
-        {
-            debug!(%addr, error = %err, "ignored dht packet");
+            bytes: buf[..len].to_vec(),
+        };
+        let target = worker_index % packet_senders.len();
+        worker_index = worker_index.wrapping_add(1);
+        if packet_senders[target].try_send(packet).is_err() {
+            dropped_packets = dropped_packets.wrapping_add(1);
+            if dropped_packets % 10_000 == 0 {
+                warn!(
+                    addr = %listen_addr,
+                    dropped_packets,
+                    "dht packet worker queues full; dropping packets"
+                );
+            }
         }
     }
 }
@@ -316,6 +419,8 @@ async fn handle_packet(
     addr: SocketAddr,
     packet: &[u8],
     get_peers_probe_count: usize,
+    crawl_mode: bool,
+    crawl_response_nodes: usize,
     tx: &mpsc::Sender<InfoHashEvent>,
 ) -> Result<()> {
     let value = parse(packet)?;
@@ -335,16 +440,17 @@ async fn handle_packet(
             }
             if let Some(hash) = active_get_peers_hash(transaction) {
                 for peer in parse_compact_peer_values(response) {
-                    let _ = tx
-                        .send(InfoHashEvent {
+                    emit_event(
+                        tx,
+                        InfoHashEvent {
                             info_hash: hash,
                             source: Source::DhtGetPeers,
                             peer_count: 1,
                             peer: Some(peer),
                             seed_nodes: Vec::new(),
                             seen_at: now_ts(),
-                        })
-                        .await;
+                        },
+                    );
                 }
             }
         }
@@ -387,16 +493,17 @@ async fn handle_packet(
                 .and_then(to_hash)
             {
                 debug!(info_hash = %hex::encode(hash), source = "get_peers", "discovered info_hash");
-                let _ = tx
-                    .send(InfoHashEvent {
+                emit_event(
+                    tx,
+                    InfoHashEvent {
                         info_hash: hash,
                         source: Source::DhtGetPeers,
                         peer_count: 0,
                         peer: None,
                         seed_nodes: event_seed_nodes(&nodes, addr),
                         seen_at: now_ts(),
-                    })
-                    .await;
+                    },
+                );
                 if get_peers_probe_count > 0 {
                     probe_get_peers(
                         socket.clone(),
@@ -416,9 +523,14 @@ async fn handle_packet(
                 .unwrap_or(node_ids[0]);
             let mut extra = BTreeMap::new();
             extra.insert(b"token".to_vec(), Value::Bytes(b"dht-lens".to_vec()));
+            let node_limit = if crawl_mode {
+                crawl_response_nodes
+            } else {
+                crawl_response_nodes.max(8)
+            };
             extra.insert(
                 b"nodes".to_vec(),
-                Value::Bytes(nodes.compact_nodes(addr, 8)),
+                Value::Bytes(nodes.compact_nodes(addr, node_limit)),
             );
             let response = response(transaction, node_id, extra);
             socket.send_to(&response, addr).await?;
@@ -431,16 +543,17 @@ async fn handle_packet(
                 let node_id = closest_node_id(&node_ids, &hash);
                 let peer = announce_peer_addr(args, addr);
                 debug!(info_hash = %hex::encode(hash), source = "announce_peer", ?peer, "discovered info_hash");
-                let _ = tx
-                    .send(InfoHashEvent {
+                emit_event(
+                    tx,
+                    InfoHashEvent {
                         info_hash: hash,
                         source: Source::DhtAnnouncePeer,
                         peer_count: peer.is_some() as u32,
                         peer,
                         seed_nodes: event_seed_nodes(&nodes, addr),
                         seen_at: now_ts(),
-                    })
-                    .await;
+                    },
+                );
                 let response = response(transaction, node_id, BTreeMap::new());
                 socket.send_to(&response, addr).await?;
                 return Ok(());
@@ -452,6 +565,12 @@ async fn handle_packet(
         _ => {}
     }
     Ok(())
+}
+
+fn emit_event(tx: &mpsc::Sender<InfoHashEvent>, event: InfoHashEvent) {
+    if let Err(err) = tx.try_send(event) {
+        debug!(error = %err, "dropping dht event because pipeline queue is full");
+    }
 }
 
 fn find_node_request(node_id: &[u8; 20], target: &[u8; 20]) -> Vec<u8> {

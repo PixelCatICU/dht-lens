@@ -16,7 +16,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::AppConfig,
-    metadata::{fetcher::fetch_from_peer, parser::ParsedMetadata},
+    metadata::{fetcher::fetch_from_peer_with_pex, parser::ParsedMetadata},
     model::{InfoHashEvent, Source, TorrentRecord, now_ts},
     storage::LibsqlStore,
 };
@@ -322,26 +322,62 @@ async fn fetch_from_first_peer(
 ) -> Result<ParsedMetadata> {
     let max_attempts = peers.len().min(config.metadata.max_peers_per_hash);
     let mut tasks = JoinSet::new();
+    let (pex_tx, mut pex_rx) = mpsc::unbounded_channel::<Vec<SocketAddr>>();
+    let mut spawned_peers = Vec::with_capacity(config.metadata.max_peers_per_hash);
+    let mut pex_open = true;
+
     for peer in peers.iter().take(max_attempts).copied() {
         let metadata_config = config.metadata.clone();
+        let pex_tx = pex_tx.clone();
+        spawned_peers.push(peer);
         tasks.spawn(async move {
             (
                 peer,
-                fetch_from_peer(peer, info_hash, &metadata_config).await,
+                fetch_from_peer_with_pex(peer, info_hash, &metadata_config, pex_tx).await,
             )
         });
     }
+    drop(pex_tx);
 
-    while let Some(result) = tasks.join_next().await {
-        match result {
-            Ok((_peer, Ok(metadata))) => {
-                tasks.abort_all();
-                return Ok(metadata);
+    loop {
+        tokio::select! {
+            result = tasks.join_next(), if !tasks.is_empty() => {
+                match result {
+                    Some(Ok((_peer, Ok(outcome)))) => {
+                        tasks.abort_all();
+                        return Ok(outcome.metadata);
+                    }
+                    Some(Ok((peer, Err(err)))) => debug!(%peer, error = %err, "metadata peer failed"),
+                    Some(Err(err)) => {
+                        debug!(error = %err, "metadata peer task failed");
+                    }
+                    None => {}
+                }
             }
-            Ok((peer, Err(err))) => debug!(%peer, error = %err, "metadata peer failed"),
-            Err(err) => {
-                debug!(error = %err, "metadata peer task failed");
+            pex_peers = pex_rx.recv(), if pex_open && spawned_peers.len() < config.metadata.max_peers_per_hash => {
+                let Some(pex_peers) = pex_peers else {
+                    pex_open = false;
+                    continue;
+                };
+                for peer in pex_peers {
+                    if spawned_peers.len() >= config.metadata.max_peers_per_hash {
+                        break;
+                    }
+                    if spawned_peers.contains(&peer) {
+                        continue;
+                    }
+                    spawned_peers.push(peer);
+                    let metadata_config = config.metadata.clone();
+                    let (peer_pex_tx, _) = mpsc::unbounded_channel::<Vec<SocketAddr>>();
+                    tasks.spawn(async move {
+                        (
+                            peer,
+                            fetch_from_peer_with_pex(peer, info_hash, &metadata_config, peer_pex_tx).await,
+                        )
+                    });
+                }
             }
+            else => break,
         }
     }
     anyhow::bail!("no usable peers for metadata")

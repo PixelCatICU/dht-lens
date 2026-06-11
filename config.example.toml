@@ -9,6 +9,11 @@ bootstrap_nodes = [
 routing_table_max_nodes = 200000
 bootstrap_query_limit = 1024
 get_peers_probe_count = 0
+packet_workers = 8
+packet_queue_size = 65536
+node_shards = 64
+crawl_mode = true
+crawl_response_nodes = 0
 virtual_nodes = 512
 
 [metadata]

@@ -18,6 +18,11 @@ pub struct DhtConfig {
     pub bootstrap_nodes: Vec<String>,
     pub bootstrap_query_limit: usize,
     pub get_peers_probe_count: usize,
+    pub packet_workers: usize,
+    pub packet_queue_size: usize,
+    pub node_shards: usize,
+    pub crawl_mode: bool,
+    pub crawl_response_nodes: usize,
     pub routing_table_max_nodes: usize,
     pub virtual_nodes: usize,
 }
@@ -85,6 +90,13 @@ impl AppConfig {
                     "router.bittorrent.com:6881".to_string(),
                     "dht.transmissionbt.com:6881".to_string(),
                     "router.utorrent.com:6881".to_string(),
+                    "router.bitcomet.com:6881".to_string(),
+                    "dht.aelitis.com:6881".to_string(),
+                    "dht.libtorrent.org:25401".to_string(),
+                    "dht.vuze.com:6881".to_string(),
+                    "router.silotis.us:6881".to_string(),
+                    "router.ktorrent.com:6881".to_string(),
+                    "router.tribler.org:6881".to_string(),
                 ]
             });
 
@@ -96,6 +108,13 @@ impl AppConfig {
                 bootstrap_query_limit: env_usize("DHT_BOOTSTRAP_QUERY_LIMIT", 1024)
                     .clamp(16, 8_192),
                 get_peers_probe_count: env_usize("DHT_GET_PEERS_PROBE_COUNT", 0).clamp(0, 64),
+                packet_workers: env_usize("DHT_PACKET_WORKERS", default_packet_workers())
+                    .clamp(1, 256),
+                packet_queue_size: env_usize("DHT_PACKET_QUEUE_SIZE", 65_536)
+                    .clamp(1_024, 1_000_000),
+                node_shards: env_usize("DHT_NODE_SHARDS", 64).clamp(1, 1_024),
+                crawl_mode: env_bool("DHT_CRAWL_MODE", true),
+                crawl_response_nodes: env_usize("DHT_CRAWL_RESPONSE_NODES", 0).clamp(0, 16),
                 routing_table_max_nodes: env_usize("DHT_ROUTING_TABLE_MAX_NODES", 200_000),
                 virtual_nodes: env_usize("DHT_VIRTUAL_NODES", 512).clamp(1, 4_096),
             },
@@ -128,6 +147,12 @@ impl AppConfig {
             },
         })
     }
+}
+
+fn default_packet_workers() -> usize {
+    std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(4)
 }
 
 fn env_usize(key: &str, default: usize) -> usize {
