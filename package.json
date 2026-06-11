@@ -1,0 +1,31 @@
+{
+  "name": "p2pspider",
+  "description": "DHT Crawler + BitTorrent Crawler = P2P Spider",
+  "version": "0.1.0",
+  "type": "module",
+  "author": {
+    "name": "Leo Yang"
+  },
+  "main": "app.js",
+  "scripts": {
+    "test": "npm run eslint",
+    "eslint": "eslint src/",
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "bencode": "^0.7.0",
+    "bitfield": "^1.1.2",
+    "iconv": "^3.0.1",
+    "lru": "^2.0.0"
+  },
+  "devDependencies": {
+    "eslint": "^1.10.3"
+  },
+  "keywords": [
+    "torrent",
+    "bittorrent",
+    "p2p",
+    "dht"
+  ],
+  "license": "MIT"
+}
