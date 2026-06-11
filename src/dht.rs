@@ -274,7 +274,7 @@ async fn bootstrap_loop(
                     return;
                 }
 
-                warn!(
+                debug!(
                     local_addr = %local_addr,
                     node = %addr,
                     error = %err,
