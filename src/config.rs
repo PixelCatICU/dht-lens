@@ -108,8 +108,8 @@ impl AppConfig {
                 bootstrap_nodes,
                 bootstrap_query_limit: env_usize("DHT_BOOTSTRAP_QUERY_LIMIT", 1024)
                     .clamp(16, 8_192),
-                get_peers_probe_count: env_usize("DHT_GET_PEERS_PROBE_COUNT", 4).clamp(0, 64),
-                get_peers_probe_depth: env_usize("DHT_GET_PEERS_PROBE_DEPTH", 2).clamp(0, 8) as u8,
+                get_peers_probe_count: env_usize("DHT_GET_PEERS_PROBE_COUNT", 2).clamp(0, 64),
+                get_peers_probe_depth: env_usize("DHT_GET_PEERS_PROBE_DEPTH", 1).clamp(0, 8) as u8,
                 packet_workers: env_usize("DHT_PACKET_WORKERS", default_packet_workers())
                     .clamp(1, 256),
                 packet_queue_size: env_usize("DHT_PACKET_QUEUE_SIZE", 65_536)

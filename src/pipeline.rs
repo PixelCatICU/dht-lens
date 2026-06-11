@@ -117,6 +117,11 @@ struct PipelineStats {
     fetch_jobs_started: AtomicU64,
     peer_fetch_attempts: AtomicU64,
     peer_fetch_failures: AtomicU64,
+    peer_fetch_connect_failures: AtomicU64,
+    peer_fetch_extension_failures: AtomicU64,
+    peer_fetch_timeout_failures: AtomicU64,
+    peer_fetch_hash_failures: AtomicU64,
+    peer_fetch_other_failures: AtomicU64,
     metadata_success: AtomicU64,
     metadata_failures: AtomicU64,
     no_usable_peers: AtomicU64,
@@ -135,6 +140,15 @@ async fn pipeline_stats_loop(stats: Arc<PipelineStats>) {
             fetch_jobs_started = stats.fetch_jobs_started.swap(0, Ordering::Relaxed),
             peer_fetch_attempts = stats.peer_fetch_attempts.swap(0, Ordering::Relaxed),
             peer_fetch_failures = stats.peer_fetch_failures.swap(0, Ordering::Relaxed),
+            peer_fetch_connect_failures =
+                stats.peer_fetch_connect_failures.swap(0, Ordering::Relaxed),
+            peer_fetch_extension_failures = stats
+                .peer_fetch_extension_failures
+                .swap(0, Ordering::Relaxed),
+            peer_fetch_timeout_failures =
+                stats.peer_fetch_timeout_failures.swap(0, Ordering::Relaxed),
+            peer_fetch_hash_failures = stats.peer_fetch_hash_failures.swap(0, Ordering::Relaxed),
+            peer_fetch_other_failures = stats.peer_fetch_other_failures.swap(0, Ordering::Relaxed),
             metadata_success = stats.metadata_success.swap(0, Ordering::Relaxed),
             metadata_failures = stats.metadata_failures.swap(0, Ordering::Relaxed),
             no_usable_peers = stats.no_usable_peers.swap(0, Ordering::Relaxed),
@@ -438,11 +452,12 @@ async fn fetch_from_first_peer(
                         return Ok(outcome.metadata);
                     }
                     Some(Ok((peer, Err(err)))) => {
-                        stats.peer_fetch_failures.fetch_add(1, Ordering::Relaxed);
+                        stats.record_peer_fetch_failure(&err);
                         debug!(%peer, error = %err, "metadata peer failed");
                     }
                     Some(Err(err)) => {
                         stats.peer_fetch_failures.fetch_add(1, Ordering::Relaxed);
+                        stats.peer_fetch_other_failures.fetch_add(1, Ordering::Relaxed);
                         debug!(error = %err, "metadata peer task failed");
                     }
                     None => {}
@@ -476,6 +491,40 @@ async fn fetch_from_first_peer(
         }
     }
     anyhow::bail!("no usable peers for metadata")
+}
+
+impl PipelineStats {
+    fn record_peer_fetch_failure(&self, err: &anyhow::Error) {
+        self.peer_fetch_failures.fetch_add(1, Ordering::Relaxed);
+        let message = err.to_string();
+        if message.contains("connect timeout")
+            || message.contains("connection refused")
+            || message.contains("connection reset")
+            || message.contains("network unreachable")
+            || message.contains("host unreachable")
+            || message.contains("No route to host")
+            || message.contains("timed out")
+        {
+            self.peer_fetch_connect_failures
+                .fetch_add(1, Ordering::Relaxed);
+        } else if message.contains("extension protocol")
+            || message.contains("ut_metadata")
+            || message.contains("missing msg_type")
+            || message.contains("invalid msg_type")
+        {
+            self.peer_fetch_extension_failures
+                .fetch_add(1, Ordering::Relaxed);
+        } else if message.contains("metadata fetch timeout") {
+            self.peer_fetch_timeout_failures
+                .fetch_add(1, Ordering::Relaxed);
+        } else if message.contains("sha1 mismatch") || message.contains("info_hash mismatch") {
+            self.peer_fetch_hash_failures
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.peer_fetch_other_failures
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 fn build_record(
