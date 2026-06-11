@@ -60,7 +60,7 @@ async function crawl() {
   });
   dht.on('error', (error) => {
     console.error('dht error', error);
-    process.exit(1);
+    if (error.syscall === 'bind') process.exit(1);
   });
   dht.on('announcePeer', ({ infoHash, address, port }) => {
     btclient.download({ address, port, source: Source.DhtAnnouncePeer }, infoHash);
