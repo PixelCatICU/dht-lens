@@ -2,7 +2,10 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use anyhow::Result;
 use rand::seq::SliceRandom;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::{
+    sync::{Semaphore, mpsc},
+    task::JoinSet,
+};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -110,12 +113,29 @@ async fn fetch_from_first_peer(
     config: &AppConfig,
 ) -> Result<ParsedMetadata> {
     let max_attempts = peers.len().min(8);
-    for peer in peers.iter().take(max_attempts) {
-        match fetch_from_peer(*peer, info_hash, &config.metadata).await {
-            Ok(metadata) => return Ok(metadata),
-            Err(err) => {
+    let mut tasks = JoinSet::new();
+    for peer in peers.iter().take(max_attempts).copied() {
+        let metadata_config = config.metadata.clone();
+        tasks.spawn(async move {
+            (
+                peer,
+                fetch_from_peer(peer, info_hash, &metadata_config).await,
+            )
+        });
+    }
+
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok((_peer, Ok(metadata))) => {
+                tasks.abort_all();
+                return Ok(metadata);
+            }
+            Ok((peer, Err(err))) => {
                 info!(%peer, error = %err, "metadata peer failed");
                 debug!(%peer, error = %err, "metadata peer failed");
+            }
+            Err(err) => {
+                debug!(error = %err, "metadata peer task failed");
             }
         }
     }

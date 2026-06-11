@@ -223,7 +223,7 @@ pub async fn get_peers(info_hash: [u8; 20], config: &DhtConfig) -> Result<Vec<So
 
     for bootstrap in &config.bootstrap_nodes {
         for addr in resolve_addrs(bootstrap).await {
-            if queued.insert(addr) {
+            if addr.is_ipv4() && queued.insert(addr) {
                 pending.push_back(addr);
             }
         }
@@ -260,8 +260,8 @@ pub async fn get_peers(info_hash: [u8; 20], config: &DhtConfig) -> Result<Vec<So
                     if let Ok((mut found_peers, mut found_nodes)) =
                         parse_get_peers_response(&buf[..len])
                     {
-                        found_peers.retain(is_global_address);
-                        found_nodes.retain(is_global_address);
+                        found_peers.retain(|addr| addr.is_ipv4() && is_global_address(addr));
+                        found_nodes.retain(|addr| addr.is_ipv4() && is_global_address(addr));
                         peers.append(&mut found_peers);
                         if peers.len() >= 64 {
                             peers.truncate(64);
@@ -634,13 +634,11 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
 }
 
 fn is_public_v6(ip: Ipv6Addr) -> bool {
-    !(
-        ip.is_unspecified()
-            || ip.is_loopback()
-            || ip.is_multicast()
-            || ip.is_unicast_link_local()
-            || ip.is_unique_local()
-    )
+    !(ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_multicast()
+        || ip.is_unicast_link_local()
+        || ip.is_unique_local())
 }
 
 async fn resolve_addrs(addr: &str) -> Vec<SocketAddr> {
