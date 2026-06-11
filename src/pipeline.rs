@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::Arc,
+    time::Instant,
 };
 
 use anyhow::Result;
@@ -9,6 +10,7 @@ use rand::seq::SliceRandom;
 use tokio::{
     sync::{Semaphore, mpsc},
     task::JoinSet,
+    time::{Duration, interval},
 };
 use tracing::{debug, info, warn};
 
@@ -31,40 +33,52 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
 
     let semaphore = Arc::new(Semaphore::new(config.metadata.max_concurrent_fetches));
     let mut short_seen: HashMap<[u8; 20], SeenState> = HashMap::new();
+    let mut pending: HashMap<[u8; 20], PendingFetch> = HashMap::new();
+    let mut flush_tick = interval(Duration::from_millis(100));
 
     info!(
         result_queue_size = config.pipeline.result_queue_size,
         db_batch_size = config.storage.batch_size,
         db_flush_interval_ms = config.storage.flush_interval.as_millis(),
+        peer_collect_window_ms = config.pipeline.peer_collect_window.as_millis(),
         "crawler started"
     );
-    while let Some(event) = hash_rx.recv().await {
-        let now = now_ts();
-        if should_skip_event(&mut short_seen, &event, now) {
-            continue;
-        }
-        if event.peer.is_none() {
-            continue;
-        }
-        if short_seen.len() > 500_000 {
-            short_seen.retain(|_, state| now - state.last_seen_at < 1_800);
-        }
+    loop {
+        tokio::select! {
+            event = hash_rx.recv() => {
+                let Some(event) = event else {
+                    break;
+                };
+                let now = now_ts();
+                if should_skip_event(&mut short_seen, &event, now) {
+                    continue;
+                }
+                let Some(peer) = event.peer else {
+                    continue;
+                };
+                if short_seen.len() > 500_000 {
+                    short_seen.retain(|_, state| now - state.last_seen_at < 1_800);
+                }
 
-        let permit = semaphore.clone().acquire_owned().await?;
-        let config = config.clone();
-        let store = store.clone();
-        tokio::spawn(async move {
-            let _permit = permit;
-            let info_hash = hex::encode(event.info_hash);
-            if let Err(err) = process_hash(event, config, store).await {
-                if err.to_string() == "no usable peers for metadata" {
-                    debug!(%info_hash, error = %err, "info_hash dropped");
-                } else {
-                    warn!(%info_hash, error = %err, "info_hash processing failed");
+                if let Some(info_hash) =
+                    add_pending_peer(&mut pending, event, peer, config.metadata.max_peers_per_hash)
+                {
+                    flush_pending_hash(
+                        &mut pending,
+                        info_hash,
+                        &semaphore,
+                        &config,
+                        &store,
+                    )
+                    .await?;
                 }
             }
-        });
+            _ = flush_tick.tick() => {
+                flush_ready_pending(&mut pending, &semaphore, &config, &store).await?;
+            }
+        }
     }
+    flush_all_pending(&mut pending, &semaphore, &config, &store).await?;
     Ok(())
 }
 
@@ -72,6 +86,99 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
 struct SeenState {
     last_seen_at: i64,
     recent_peers: VecDeque<(SocketAddr, i64)>,
+}
+
+#[derive(Debug)]
+struct PendingFetch {
+    event: InfoHashEvent,
+    peers: Vec<SocketAddr>,
+    created_at: Instant,
+}
+
+fn add_pending_peer(
+    pending: &mut HashMap<[u8; 20], PendingFetch>,
+    mut event: InfoHashEvent,
+    peer: SocketAddr,
+    max_peers_per_hash: usize,
+) -> Option<[u8; 20]> {
+    let entry = pending.entry(event.info_hash).or_insert_with(|| {
+        event.peer_count = 0;
+        PendingFetch {
+            event,
+            peers: Vec::new(),
+            created_at: Instant::now(),
+        }
+    });
+
+    if !entry.peers.contains(&peer) {
+        entry.peers.push(peer);
+    }
+
+    (entry.peers.len() >= max_peers_per_hash).then_some(entry.event.info_hash)
+}
+
+async fn flush_ready_pending(
+    pending: &mut HashMap<[u8; 20], PendingFetch>,
+    semaphore: &Arc<Semaphore>,
+    config: &AppConfig,
+    store: &Option<Arc<LibsqlStore>>,
+) -> Result<()> {
+    let ready: Vec<_> = pending
+        .iter()
+        .filter_map(|(info_hash, fetch)| {
+            (fetch.created_at.elapsed() >= config.pipeline.peer_collect_window)
+                .then_some(*info_hash)
+        })
+        .collect();
+
+    for info_hash in ready {
+        flush_pending_hash(pending, info_hash, semaphore, config, store).await?;
+    }
+    Ok(())
+}
+
+async fn flush_all_pending(
+    pending: &mut HashMap<[u8; 20], PendingFetch>,
+    semaphore: &Arc<Semaphore>,
+    config: &AppConfig,
+    store: &Option<Arc<LibsqlStore>>,
+) -> Result<()> {
+    let hashes: Vec<_> = pending.keys().copied().collect();
+    for info_hash in hashes {
+        flush_pending_hash(pending, info_hash, semaphore, config, store).await?;
+    }
+    Ok(())
+}
+
+async fn flush_pending_hash(
+    pending: &mut HashMap<[u8; 20], PendingFetch>,
+    info_hash: [u8; 20],
+    semaphore: &Arc<Semaphore>,
+    config: &AppConfig,
+    store: &Option<Arc<LibsqlStore>>,
+) -> Result<()> {
+    let Some(fetch) = pending.remove(&info_hash) else {
+        return Ok(());
+    };
+    if fetch.peers.is_empty() {
+        return Ok(());
+    }
+
+    let permit = semaphore.clone().acquire_owned().await?;
+    let config = config.clone();
+    let store = store.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        let info_hash = hex::encode(fetch.event.info_hash);
+        if let Err(err) = process_hash(fetch.event, fetch.peers, config, store).await {
+            if err.to_string() == "no usable peers for metadata" {
+                debug!(%info_hash, error = %err, "info_hash dropped");
+            } else {
+                warn!(%info_hash, error = %err, "info_hash processing failed");
+            }
+        }
+    });
+    Ok(())
 }
 
 fn should_skip_event(
@@ -110,11 +217,12 @@ fn should_skip_event(
 
 async fn process_hash(
     mut event: InfoHashEvent,
+    mut peers: Vec<SocketAddr>,
     config: AppConfig,
     store: Option<Arc<LibsqlStore>>,
 ) -> Result<()> {
     let info_hash_hex = hex::encode(event.info_hash);
-    let Some(primary_peer) = event.peer else {
+    if peers.is_empty() {
         debug!(
             info_hash = %info_hash_hex,
             source = ?event.source,
@@ -122,9 +230,8 @@ async fn process_hash(
             "info_hash observed without peer; skipping metadata fetch"
         );
         return Ok(());
-    };
+    }
 
-    let mut peers = vec![primary_peer];
     peers.sort_unstable();
     peers.dedup();
     peers.shuffle(&mut rand::thread_rng());

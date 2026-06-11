@@ -34,6 +34,7 @@ pub struct MetadataConfig {
 pub struct PipelineConfig {
     pub info_hash_queue_size: usize,
     pub result_queue_size: usize,
+    pub peer_collect_window: Duration,
     pub print_jsonl: bool,
 }
 
@@ -106,6 +107,7 @@ impl AppConfig {
             pipeline: PipelineConfig {
                 info_hash_queue_size: env_usize("INFO_HASH_QUEUE_SIZE", 50_000),
                 result_queue_size: env_usize("RESULT_QUEUE_SIZE", 100_000),
+                peer_collect_window: Duration::from_millis(env_u64("PEER_COLLECT_WINDOW_MS", 750)),
                 print_jsonl: env_bool("PRINT_JSONL", true),
             },
             storage: StorageConfig {
