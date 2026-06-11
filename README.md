@@ -1,6 +1,6 @@
 # dht-lens
 
-Node.js DHT magnet metadata crawler.
+Node.js 26 DHT magnet metadata crawler.
 
 The first version runs as a single-node long-lived service:
 
