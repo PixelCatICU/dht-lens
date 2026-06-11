@@ -1,12 +1,4 @@
 {
   "schemaVersion": 2,
-  "dockerfileLines": [
-    "FROM node:26-slim",
-    "WORKDIR /app",
-    "COPY package*.json ./",
-    "RUN npm install --omit=dev",
-    "COPY . .",
-    "EXPOSE 6881",
-    "CMD [\"npm\", \"start\"]"
-  ]
+  "templateId": "node/22"
 }
