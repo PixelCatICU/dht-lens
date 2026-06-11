@@ -1,0 +1,16 @@
+{
+  "name": "dht-lens",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node js/app.mjs crawl --print",
+    "migrate": "node js/app.mjs migrate",
+    "search": "node js/app.mjs search",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.15.15",
+    "bencode": "^0.7.0",
+    "iconv-lite": "^0.6.3"
+  }
+}

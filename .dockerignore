@@ -1,5 +1,6 @@
-target/
-.git/
+node_modules
+target
+.git
 .env
 .DS_Store
 *.log

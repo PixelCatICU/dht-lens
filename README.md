@@ -1,14 +1,14 @@
 # dht-lens
 
-Rust DHT magnet metadata crawler.
+Node.js DHT magnet metadata crawler.
 
 The first version runs as a single-node long-lived service:
 
 - listens on public Mainline DHT
-- uses `adysec/dht-spider` as the DHT crawler engine
-- runs `adysec` Crawl mode to bias peers toward `announce_peer`
-- discovers `info_hash` from `announce_peer`, `get_peers` values, and PeX peers
-- uses recursive `find_node` / `get_peers` traffic for node table growth
+- uses the JS `p2pspider` DHT crawler approach
+- returns empty `get_peers` nodes with a token to bias peers toward `announce_peer`
+- discovers `info_hash` from public `announce_peer` traffic
+- uses recursive `find_node` traffic for node table growth
 - fetches metadata from public `announce_peer` addresses
 - fetches BEP 9 torrent metadata from peers
 - parses `name`, `total_size`, and file list
@@ -32,11 +32,11 @@ Optional runtime settings can be provided through environment variables:
 
 ```env
 DHT_LISTEN_ADDR=0.0.0.0:6881
-DHT_BOOTSTRAP_QUERY_LIMIT=512
-DHT_GET_PEERS_PROBE_DEPTH=1
-DHT_CRAWL_MODE=true
+DHT_JOIN_INTERVAL_MS=1000
+DHT_NEIGHBOR_INTERVAL_MS=1000
 DHT_ROUTING_TABLE_MAX_NODES=100000
-METADATA_MAX_CONCURRENT_FETCHES=1000
+METADATA_MAX_CONCURRENT_FETCHES=512
+METADATA_TIMEOUT_MS=8000
 INFO_HASH_QUEUE_SIZE=10000
 PRINT_JSONL=true
 STORAGE_ENABLED=true
@@ -50,25 +50,19 @@ MAX_NAME_NGRAM_LEN=4096
 Run database migrations:
 
 ```bash
-cargo run -- migrate
+npm run migrate
 ```
 
 Start crawler:
 
 ```bash
-cargo run -- crawl --print
+npm start
 ```
 
 Search by name:
 
 ```bash
-cargo run -- search "周杰伦" --limit 20
-```
-
-Parse a local `.torrent` file for parser verification:
-
-```bash
-cargo run -- parse-torrent ./sample.torrent
+npm run search -- "周杰伦" --limit 20
 ```
 
 ## CapRover Deploy
@@ -86,11 +80,8 @@ Set these CapRover app environment variables:
 ```env
 LIBSQL_DATABASE_URL=https://your-libsql-host.example.com
 LIBSQL_AUTH_TOKEN=replace-with-token
-RUST_LOG=dht_lens=info
 DHT_LISTEN_ADDR=0.0.0.0:6881
-DHT_BOOTSTRAP_QUERY_LIMIT=512
-DHT_GET_PEERS_PROBE_DEPTH=1
-DHT_CRAWL_MODE=true
+METADATA_MAX_CONCURRENT_FETCHES=512
 PRINT_JSONL=true
 STORAGE_ENABLED=true
 ```
@@ -102,26 +93,19 @@ export CAPROVER_APP=dht-lens
 ./scripts/deploy-caprover.sh
 ```
 
-The preferred deployment path is GitHub Actions:
+The deployment path is server-side Docker build:
 
-1. GitHub Actions builds and pushes `ghcr.io/pixelcaticu/dht-lens:latest`.
+1. `caprover deploy` uploads this source tree.
 2. CapRover reads `captain-definition`.
-3. CapRover pulls the prebuilt image instead of building Rust on the server.
+3. The server builds `Dockerfile`, runs `npm ci --omit=dev`, and starts Node.
 
-Set this GitHub Actions secret to auto-deploy after image push:
-
-```text
-CAPROVER_DEPLOY_WEBHOOK
-```
-
-The GHCR package must be public, or CapRover must be configured with registry
-credentials that can pull `ghcr.io/pixelcaticu/dht-lens:latest`.
+GitHub Actions only runs Node checks; it does not build or push a GHCR image.
 
 The container starts with:
 
 ```bash
-dht-lens migrate
-dht-lens crawl --print
+node /app/js/app.mjs migrate
+node /app/js/app.mjs crawl --print
 ```
 
 ## CapRover recovery when panel is unreachable
@@ -142,9 +126,8 @@ This sets:
 
 CapRover's normal HTTP routing does not automatically publish UDP DHT traffic.
 For best DHT listener performance, expose UDP `6881` on the host or run this
-service on a host/network where inbound UDP is reachable. The crawler still
-performs recursive DHT queries through `adysec/dht-spider`, but passive DHT
-discovery benefits from inbound UDP.
+service on a host/network where inbound UDP is reachable. This JS crawler relies
+heavily on inbound public DHT traffic and recursive `find_node` expansion.
 
 ## Database
 
@@ -176,9 +159,9 @@ Example:
 
 ## Current Boundary
 
-This version delegates DHT crawl behavior and BEP 9/10/11 metadata fetching to
-`adysec/dht-spider`, while keeping dht-lens responsible for metadata parsing,
-libSQL writes, trend buckets, and name search. The active knobs that matter most
-now are `DHT_LISTEN_ADDR`, `DHT_BOOTSTRAP_NODES`, `DHT_BOOTSTRAP_QUERY_LIMIT`,
-`DHT_CRAWL_MODE`, `DHT_ROUTING_TABLE_MAX_NODES`,
-`METADATA_MAX_CONCURRENT_FETCHES`, and `INFO_HASH_QUEUE_SIZE`.
+This version uses a Node.js crawler based on the supplied `p2pspider` code while
+keeping the existing libSQL schema, trend buckets, and `name_ngram` search. The
+active knobs that matter most now are `DHT_LISTEN_ADDR`, `DHT_BOOTSTRAP_NODES`,
+`DHT_ROUTING_TABLE_MAX_NODES`, `DHT_JOIN_INTERVAL_MS`,
+`DHT_NEIGHBOR_INTERVAL_MS`, `METADATA_TIMEOUT_MS`, and
+`METADATA_MAX_CONCURRENT_FETCHES`.

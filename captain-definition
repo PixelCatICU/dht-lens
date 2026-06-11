@@ -1,4 +1,4 @@
 {
   "schemaVersion": 2,
-  "imageName": "ghcr.io/pixelcaticu/dht-lens:latest"
+  "dockerfilePath": "./Dockerfile"
 }
