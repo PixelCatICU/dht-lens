@@ -5,5 +5,5 @@ p2pspider({
         port: 6881,
         nodesMaxSize: 4000
     }, async ({ name, infohash, files, size }) => {
-        console.log(new Date().getTime() + ' ' + name)
+        console.log(new Date().getTimezoneOffset() + ' ' + name)
     })
