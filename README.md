@@ -65,15 +65,16 @@ cargo run -- search "周杰伦" --limit 20
 
 This repo includes:
 
+- `captain-definition`
 - `Dockerfile`
 - `.github/workflows/deploy.yml`
 - `entrypoint.sh`
 
-GitHub Actions builds the runtime image on every `main` push and uploads it to
-the rolling GitHub Release tag `latest`:
+GitHub Actions builds the Linux executable on every `main` push and uploads it
+to the rolling GitHub Release tag `latest`:
 
 ```text
-dht-lens-docker-image-linux-amd64.tar.gz
+dht-lens-linux-amd64.tar.gz
 SHA256SUMS
 ```
 
@@ -89,14 +90,23 @@ PRINT_JSONL=true
 STORAGE_ENABLED=true
 ```
 
-The server should download and load the prebuilt image instead of building from
-source on the server or pulling from GHCR:
+CapRover still builds the Docker image, but the Dockerfile does not compile
+Rust on the server. It downloads the executable from the `latest` GitHub
+Release, verifies `SHA256SUMS`, and copies it into a slim Debian runtime image.
 
 ```bash
-curl -L -o /tmp/dht-lens-image.tar.gz \
-  https://github.com/PixelCatICU/dht-lens/releases/download/latest/dht-lens-docker-image-linux-amd64.tar.gz
-docker load -i /tmp/dht-lens-image.tar.gz
+caprover deploy
 ```
+
+To make GitHub release first and CapRover deploy second, set this GitHub Actions
+secret to a CapRover deployment webhook URL:
+
+```text
+CAPROVER_DEPLOY_WEBHOOK_URL
+```
+
+If the secret is set, the workflow triggers CapRover only after the `latest`
+Release has been published.
 
 For Docker Swarm host-mode UDP deployment, stop the old replica before updating
 the image so `6881/udp` is not reserved by both old and new tasks at the same

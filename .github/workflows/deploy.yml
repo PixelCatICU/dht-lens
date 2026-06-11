@@ -34,23 +34,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Build image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: dht-lens:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang cmake pkg-config
+
+      - name: Build release binary
+        run: cargo build --release --locked
 
       - name: Pack release assets
         run: |
           mkdir -p dist
-          docker save dht-lens:${GITHUB_SHA} | gzip -9 > dist/dht-lens-docker-image-linux-amd64.tar.gz
-          sha256sum dist/dht-lens-docker-image-linux-amd64.tar.gz > dist/SHA256SUMS
+          cp target/release/dht-lens dist/dht-lens
+          tar -C dist -czf dist/dht-lens-linux-amd64.tar.gz dht-lens
+          (cd dist && sha256sum dht-lens-linux-amd64.tar.gz > SHA256SUMS)
 
       - name: Publish rolling release
         env:
@@ -63,3 +63,14 @@ jobs:
             --title "dht-lens latest" \
             --notes "Built from ${GITHUB_SHA}" \
             --latest
+
+      - name: Trigger CapRover deploy
+        env:
+          CAPROVER_DEPLOY_WEBHOOK_URL: ${{ secrets.CAPROVER_DEPLOY_WEBHOOK_URL }}
+        run: |
+          if [ -z "${CAPROVER_DEPLOY_WEBHOOK_URL}" ]; then
+            echo "CAPROVER_DEPLOY_WEBHOOK_URL is not set; skipping CapRover deploy trigger"
+            exit 0
+          fi
+          curl --fail --show-error --silent --location \
+            --request POST "${CAPROVER_DEPLOY_WEBHOOK_URL}"

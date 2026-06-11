@@ -1,25 +1,27 @@
-FROM rust:bookworm AS builder
-
-WORKDIR /app
-
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends clang cmake pkg-config \
-  && rm -rf /var/lib/apt/lists/*
-
-COPY Cargo.toml Cargo.lock* ./
-COPY src ./src
-
-RUN cargo build --release
-
 FROM debian:bookworm-slim
 
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates \
+  && apt-get install -y --no-install-recommends ca-certificates curl tar \
   && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/dht-lens /usr/local/bin/dht-lens
+ARG DHT_LENS_RELEASE_TAG=latest
+ARG CAPROVER_GIT_COMMIT_SHA=local
+
+RUN echo "release=${DHT_LENS_RELEASE_TAG} commit=${CAPROVER_GIT_COMMIT_SHA}" \
+  && curl --fail --location --retry 5 --connect-timeout 20 \
+    -o /tmp/dht-lens-linux-amd64.tar.gz \
+    "https://github.com/PixelCatICU/dht-lens/releases/download/${DHT_LENS_RELEASE_TAG}/dht-lens-linux-amd64.tar.gz" \
+  && curl --fail --location --retry 5 --connect-timeout 20 \
+    -o /tmp/SHA256SUMS \
+    "https://github.com/PixelCatICU/dht-lens/releases/download/${DHT_LENS_RELEASE_TAG}/SHA256SUMS" \
+  && cd /tmp \
+  && sha256sum -c SHA256SUMS \
+  && tar -xzf dht-lens-linux-amd64.tar.gz -C /usr/local/bin dht-lens \
+  && chmod +x /usr/local/bin/dht-lens \
+  && rm -f /tmp/dht-lens-linux-amd64.tar.gz /tmp/SHA256SUMS
+
 COPY entrypoint.sh /usr/local/bin/dht-lens-entrypoint.sh
 
 RUN chmod +x /usr/local/bin/dht-lens-entrypoint.sh
