@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     net::SocketAddr,
     sync::{
         Arc,
@@ -9,7 +9,6 @@ use std::{
 };
 
 use anyhow::Result;
-use rand::seq::SliceRandom;
 use tokio::{
     sync::{Semaphore, mpsc},
     task::JoinSet,
@@ -178,6 +177,8 @@ fn add_pending_peers(
     peers: Vec<SocketAddr>,
     max_peers_per_hash: usize,
 ) -> Option<[u8; 20]> {
+    let current_peer = event.peer;
+    let current_source = event.source;
     let entry = pending.entry(event.info_hash).or_insert_with(|| {
         event.peer_count = 0;
         PendingFetch {
@@ -187,16 +188,30 @@ fn add_pending_peers(
         }
     });
 
+    if matches!(current_source, Source::DhtAnnouncePeer)
+        && let Some(peer) = current_peer
+    {
+        push_peer_front(&mut entry.peers, peer, max_peers_per_hash);
+    }
+
     for peer in peers {
-        if entry.peers.len() >= max_peers_per_hash {
-            break;
-        }
-        if !entry.peers.contains(&peer) {
-            entry.peers.push(peer);
-        }
+        push_peer_back(&mut entry.peers, peer, max_peers_per_hash);
     }
 
     (entry.peers.len() >= max_peers_per_hash).then_some(entry.event.info_hash)
+}
+
+fn push_peer_front(peers: &mut Vec<SocketAddr>, peer: SocketAddr, limit: usize) {
+    peers.retain(|candidate| *candidate != peer);
+    peers.insert(0, peer);
+    peers.truncate(limit);
+}
+
+fn push_peer_back(peers: &mut Vec<SocketAddr>, peer: SocketAddr, limit: usize) {
+    if peers.len() >= limit || peers.contains(&peer) {
+        return;
+    }
+    peers.push(peer);
 }
 
 async fn flush_ready_pending(
@@ -392,9 +407,8 @@ async fn fetch_record(
         anyhow::bail!("no usable peers for metadata");
     }
 
-    peers.sort_unstable();
-    peers.dedup();
-    peers.shuffle(&mut rand::thread_rng());
+    let mut seen = HashSet::with_capacity(peers.len());
+    peers.retain(|peer| seen.insert(*peer));
     event.peer_count = peers.len() as u32;
     debug!(
         info_hash = %info_hash_hex,
