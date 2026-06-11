@@ -213,13 +213,23 @@ fn bind_udp_socket(addr: SocketAddr) -> Result<UdpSocket> {
     }
 }
 
-pub async fn get_peers(info_hash: [u8; 20], config: &DhtConfig) -> Result<Vec<SocketAddr>> {
+pub async fn get_peers(
+    info_hash: [u8; 20],
+    config: &DhtConfig,
+    seed_nodes: &[SocketAddr],
+) -> Result<Vec<SocketAddr>> {
     let socket = UdpSocket::bind("0.0.0.0:0").await?;
     let node_id = random_id();
     let mut peers = Vec::new();
     let mut pending = VecDeque::new();
     let mut queued = HashSet::new();
     let mut queried_nodes = HashSet::new();
+
+    for addr in seed_nodes {
+        if addr.is_ipv4() && is_global_address(addr) && queued.insert(*addr) {
+            pending.push_back(*addr);
+        }
+    }
 
     for bootstrap in &config.bootstrap_nodes {
         for addr in resolve_addrs(bootstrap).await {
@@ -233,7 +243,7 @@ pub async fn get_peers(info_hash: [u8; 20], config: &DhtConfig) -> Result<Vec<So
     let mut queried = 0usize;
     let mut buf = vec![0u8; 4096];
 
-    while Instant::now() < deadline && queried < config.max_inflight_queries.min(256) {
+    while Instant::now() < deadline && queried < config.max_inflight_queries.min(1_024) {
         let mut batch = Vec::new();
         while batch.len() < 64 {
             let Some(node) = pending.pop_front() else {
@@ -272,7 +282,7 @@ pub async fn get_peers(info_hash: [u8; 20], config: &DhtConfig) -> Result<Vec<So
                                 pending.push_back(node);
                             }
                         }
-                        while pending.len() > config.routing_table_max_nodes.min(5_000) {
+                        while pending.len() > config.routing_table_max_nodes.min(10_000) {
                             pending.pop_back();
                         }
                     }
@@ -284,6 +294,19 @@ pub async fn get_peers(info_hash: [u8; 20], config: &DhtConfig) -> Result<Vec<So
     }
 
     Ok(unique(peers))
+}
+
+fn event_seed_nodes(nodes: &NodeTable, addr: SocketAddr) -> Vec<SocketAddr> {
+    let mut seed_nodes = nodes.sample(addr, 256);
+    if is_global_address(&addr) {
+        seed_nodes.push(addr);
+    }
+    unique(
+        seed_nodes
+            .into_iter()
+            .filter(|node| node.is_ipv4() && is_global_address(node))
+            .collect(),
+    )
 }
 
 async fn bootstrap_loop(
@@ -432,6 +455,7 @@ async fn handle_packet(
                         source: Source::DhtGetPeers,
                         peer_count: 0,
                         peer: None,
+                        seed_nodes: event_seed_nodes(&nodes, addr),
                         seen_at: now_ts(),
                     })
                     .await;
@@ -464,6 +488,7 @@ async fn handle_packet(
                         source: Source::DhtAnnouncePeer,
                         peer_count: peer.is_some() as u32,
                         peer,
+                        seed_nodes: event_seed_nodes(&nodes, addr),
                         seen_at: now_ts(),
                     })
                     .await;

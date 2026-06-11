@@ -44,6 +44,7 @@ pub struct InfoHashEvent {
     pub source: Source,
     pub peer_count: u32,
     pub peer: Option<std::net::SocketAddr>,
+    pub seed_nodes: Vec<std::net::SocketAddr>,
     pub seen_at: i64,
 }
 

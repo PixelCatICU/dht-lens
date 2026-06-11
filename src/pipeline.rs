@@ -75,7 +75,7 @@ async fn process_hash(
 ) -> Result<()> {
     let info_hash_hex = hex::encode(event.info_hash);
     let mut peers: Vec<_> = event.peer.into_iter().collect();
-    peers.extend(crate::dht::get_peers(event.info_hash, &config.dht).await?);
+    peers.extend(crate::dht::get_peers(event.info_hash, &config.dht, &event.seed_nodes).await?);
     peers.sort_unstable();
     peers.dedup();
     peers.shuffle(&mut rand::thread_rng());
