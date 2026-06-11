@@ -20,9 +20,9 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/dht-lens /usr/local/bin/dht-lens
-COPY scripts/caprover-start.sh /usr/local/bin/caprover-start.sh
+COPY entrypoint.sh /usr/local/bin/dht-lens-entrypoint.sh
 
-RUN chmod +x /usr/local/bin/caprover-start.sh
+RUN chmod +x /usr/local/bin/dht-lens-entrypoint.sh
 
 ENV RUST_LOG=dht_lens=info
 ENV DHT_LISTEN_ADDR=0.0.0.0:6881
@@ -34,4 +34,4 @@ ENV STORAGE_ENABLED=true
 
 EXPOSE 6881/udp
 
-CMD ["/usr/local/bin/caprover-start.sh"]
+CMD ["/usr/local/bin/dht-lens-entrypoint.sh"]

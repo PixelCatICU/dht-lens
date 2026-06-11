@@ -61,16 +61,23 @@ Search by name:
 cargo run -- search "周杰伦" --limit 20
 ```
 
-## CapRover Deploy
+## Deploy
 
 This repo includes:
 
-- `captain-definition`
 - `Dockerfile`
 - `.github/workflows/deploy.yml`
-- `scripts/caprover-start.sh`
+- `entrypoint.sh`
 
-Set these CapRover app environment variables:
+GitHub Actions builds and pushes the runtime image to GHCR on every `main`
+push:
+
+```text
+ghcr.io/pixelcaticu/dht-lens:main
+ghcr.io/pixelcaticu/dht-lens:<commit-sha>
+```
+
+Set these service environment variables:
 
 ```env
 LIBSQL_DATABASE_URL=https://your-libsql-host.example.com
@@ -82,13 +89,16 @@ PRINT_JSONL=true
 STORAGE_ENABLED=true
 ```
 
-The deployment path is server-side Docker build:
+The server should pull and run the prebuilt image instead of building from
+source on the server:
 
-1. `caprover deploy` uploads this source tree.
-2. CapRover reads `captain-definition`.
-3. The server builds `Dockerfile`, runs `cargo build --release`, and starts `dht-lens`.
+```bash
+docker pull ghcr.io/pixelcaticu/dht-lens:main
+```
 
-GitHub Actions runs Rust format and test checks; it does not build or push a GHCR image.
+For Docker Swarm host-mode UDP deployment, stop the old replica before updating
+the image so `6881/udp` is not reserved by both old and new tasks at the same
+time.
 
 The container starts with:
 
@@ -99,7 +109,7 @@ dht-lens crawl --print
 
 CapRover's normal HTTP routing does not automatically publish UDP DHT traffic.
 For best DHT listener performance, expose UDP `6881` on the host or run this
-service on a host/network where inbound UDP is reachable. This JS crawler relies
+service on a host/network where inbound UDP is reachable. This crawler relies
 heavily on inbound public DHT traffic and `dht-crawler` metadata workers.
 
 ## Database
