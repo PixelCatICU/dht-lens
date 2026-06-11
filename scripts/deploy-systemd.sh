@@ -31,6 +31,7 @@ Type=simple
 User=${RUN_USER}
 WorkingDirectory=${APP_DIR}
 Environment=NODE_ENV=production
+EnvironmentFile=-${APP_DIR}/.env
 ExecStart=${NODE_BIN} ${APP_DIR}/app.mjs
 Restart=always
 RestartSec=5
