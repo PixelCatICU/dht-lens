@@ -61,7 +61,7 @@ impl AppConfig {
             metadata: MetadataConfig {
                 max_concurrent_fetches: env_usize("METADATA_MAX_CONCURRENT_FETCHES", 1_000)
                     .clamp(16, 8_192),
-                timeout: Duration::from_secs(env_u64("METADATA_TIMEOUT_SECS", 3).clamp(1, 120)),
+                timeout: Duration::from_secs(env_u64("METADATA_TIMEOUT_SECS", 15).clamp(1, 120)),
             },
             pipeline: PipelineConfig {
                 print_jsonl: env_bool("PRINT_JSONL", true),

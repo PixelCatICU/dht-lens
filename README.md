@@ -5,12 +5,12 @@ Rust DHT magnet metadata crawler.
 The first version runs as a single-node long-lived service:
 
 - listens on public Mainline DHT
-- uses the crates.io `dht-crawler` crate
-- discovers public DHT torrent metadata through `dht-crawler::DHTServer`
+- uses vendored crawler code adapted from `adysec/dht-spider`
+- discovers public DHT torrent metadata through DHT crawl mode
 - fetches BEP 9 torrent metadata from peers
 - fetches metadata from public `announce_peer` addresses
 - parses `name`, `total_size`, and file list
-- prints fetched metadata names
+- prints fetched metadata names only, plus error/warn logs
 - writes successful metadata only to remote libSQL
 - indexes `name_ngram` with libSQL FTS5
 - stores 5-minute and hourly trend buckets
@@ -32,7 +32,7 @@ Optional runtime settings can be provided through environment variables:
 DHT_LISTEN_ADDR=0.0.0.0:6881
 DHT_ROUTING_TABLE_MAX_NODES=100000
 METADATA_MAX_CONCURRENT_FETCHES=1000
-METADATA_TIMEOUT_SECS=3
+METADATA_TIMEOUT_SECS=15
 INFO_HASH_QUEUE_SIZE=10000
 PRINT_JSONL=true
 STORAGE_ENABLED=true
@@ -85,7 +85,7 @@ LIBSQL_DATABASE_URL=https://your-libsql-host.example.com
 LIBSQL_AUTH_TOKEN=replace-with-token
 DHT_LISTEN_ADDR=0.0.0.0:6881
 METADATA_MAX_CONCURRENT_FETCHES=1000
-METADATA_TIMEOUT_SECS=3
+METADATA_TIMEOUT_SECS=15
 PRINT_JSONL=true
 STORAGE_ENABLED=true
 ```
@@ -122,7 +122,7 @@ dht-lens crawl --print
 CapRover's normal HTTP routing does not automatically publish UDP DHT traffic.
 For best DHT listener performance, expose UDP `6881` on the host or run this
 service on a host/network where inbound UDP is reachable. This crawler relies
-heavily on inbound public DHT traffic and `dht-crawler` metadata workers.
+heavily on inbound public DHT traffic and BEP 9 metadata workers.
 
 ## Database
 
@@ -154,9 +154,9 @@ Example:
 
 ## Current Boundary
 
-This version delegates DHT crawl behavior and BEP 9 metadata fetching to the
-crates.io `dht-crawler` crate, while keeping dht-lens responsible for libSQL
-writes, trend buckets, and `name_ngram` search. The active knobs that matter most
-now are `DHT_LISTEN_ADDR`, `DHT_ROUTING_TABLE_MAX_NODES`,
+This version uses crawler code adapted from `adysec/dht-spider` for DHT crawl
+behavior and BEP 9 metadata fetching, while keeping dht-lens responsible for
+libSQL writes, trend buckets, and `name_ngram` search. The active knobs that
+matter most now are `DHT_LISTEN_ADDR`, `DHT_ROUTING_TABLE_MAX_NODES`,
 `INFO_HASH_QUEUE_SIZE`, `METADATA_TIMEOUT_SECS`, and
 `METADATA_MAX_CONCURRENT_FETCHES`.

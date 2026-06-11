@@ -63,13 +63,6 @@ pub async fn run(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Result<(
                                 if config.pipeline.print_jsonl {
                                     println!("{}", record.name);
                                 }
-                                info!(
-                                    info_hash = %record.info_hash,
-                                    name = %record.name,
-                                    total_size = record.total_size,
-                                    file_count = record.file_count,
-                                    "metadata fetched"
-                                );
 
                                 if let Some(store) = store {
                                     match store
