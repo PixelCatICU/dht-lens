@@ -6,20 +6,20 @@ bootstrap_nodes = [
   "dht.transmissionbt.com:6881",
   "router.utorrent.com:6881"
 ]
-routing_table_max_nodes = 100000
-bootstrap_query_limit = 512
+routing_table_max_nodes = 200000
+bootstrap_query_limit = 1024
 virtual_nodes = 512
 
 [metadata]
-max_concurrent_fetches = 1000
+max_concurrent_fetches = 4096
 max_peers_per_hash = 32
-connect_timeout_secs = 5
-metadata_timeout_secs = 3
+connect_timeout_secs = 2
+metadata_timeout_secs = 2
 max_metadata_size_mb = 8
 
 [pipeline]
-info_hash_queue_size = 10000
-result_queue_size = 50000
+info_hash_queue_size = 50000
+result_queue_size = 100000
 print_jsonl = true
 
 [storage]

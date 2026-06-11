@@ -233,7 +233,7 @@ async fn bootstrap_loop(
     bootstrap_query_limit: usize,
     nodes: Arc<NodeTable>,
 ) {
-    let mut ticker = interval(Duration::from_secs(15));
+    let mut ticker = interval(Duration::from_secs(5));
     let local_addr = match socket.local_addr() {
         Ok(addr) => addr,
         Err(err) => {

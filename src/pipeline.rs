@@ -1,4 +1,8 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    net::SocketAddr,
+    sync::Arc,
+};
 
 use anyhow::Result;
 use rand::seq::SliceRandom;
@@ -26,7 +30,7 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
     });
 
     let semaphore = Arc::new(Semaphore::new(config.metadata.max_concurrent_fetches));
-    let mut short_seen: HashMap<[u8; 20], (i64, bool)> = HashMap::new();
+    let mut short_seen: HashMap<[u8; 20], SeenState> = HashMap::new();
 
     info!(
         result_queue_size = config.pipeline.result_queue_size,
@@ -36,22 +40,14 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
     );
     while let Some(event) = hash_rx.recv().await {
         let now = now_ts();
-        let event_has_peer = event.peer.is_some();
-        if short_seen
-            .get(&event.info_hash)
-            .is_some_and(|(seen_at, seen_with_peer)| {
-                if !event_has_peer {
-                    now - *seen_at < 1_800
-                } else {
-                    *seen_with_peer && now - *seen_at < 300
-                }
-            })
-        {
+        if should_skip_event(&mut short_seen, &event, now) {
             continue;
         }
-        short_seen.insert(event.info_hash, (now, event_has_peer));
+        if event.peer.is_none() {
+            continue;
+        }
         if short_seen.len() > 500_000 {
-            short_seen.retain(|_, (seen_at, _)| now - *seen_at < 1_800);
+            short_seen.retain(|_, state| now - state.last_seen_at < 1_800);
         }
 
         let permit = semaphore.clone().acquire_owned().await?;
@@ -70,6 +66,46 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
         });
     }
     Ok(())
+}
+
+#[derive(Debug, Default)]
+struct SeenState {
+    last_seen_at: i64,
+    recent_peers: VecDeque<(SocketAddr, i64)>,
+}
+
+fn should_skip_event(
+    short_seen: &mut HashMap<[u8; 20], SeenState>,
+    event: &InfoHashEvent,
+    now: i64,
+) -> bool {
+    let state = short_seen.entry(event.info_hash).or_default();
+
+    let Some(peer) = event.peer else {
+        if now - state.last_seen_at < 1_800 {
+            return true;
+        }
+        state.last_seen_at = now;
+        return false;
+    };
+
+    state.last_seen_at = now;
+    state
+        .recent_peers
+        .retain(|(_, seen_at)| now - *seen_at < 300);
+    if state
+        .recent_peers
+        .iter()
+        .any(|(recent_peer, _)| *recent_peer == peer)
+    {
+        return true;
+    }
+
+    state.recent_peers.push_back((peer, now));
+    while state.recent_peers.len() > 32 {
+        state.recent_peers.pop_front();
+    }
+    false
 }
 
 async fn process_hash(
