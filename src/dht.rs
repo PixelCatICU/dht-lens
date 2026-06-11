@@ -365,7 +365,7 @@ async fn handle_packet(
                 .and_then(as_bytes)
                 .and_then(to_hash)
             {
-                info!(info_hash = %hex::encode(hash), source = "get_peers", "discovered info_hash");
+                debug!(info_hash = %hex::encode(hash), source = "get_peers", "discovered info_hash");
                 let _ = tx
                     .send(InfoHashEvent {
                         info_hash: hash,
