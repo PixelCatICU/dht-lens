@@ -1,16 +1,14 @@
 # dht-lens
 
-Node.js 26 DHT magnet metadata crawler.
+Rust DHT magnet metadata crawler.
 
 The first version runs as a single-node long-lived service:
 
 - listens on public Mainline DHT
-- uses the JS `p2pspider` DHT crawler approach
-- returns empty `get_peers` nodes with a token to bias peers toward `announce_peer`
-- discovers `info_hash` from public `announce_peer` traffic
-- uses recursive `find_node` traffic for node table growth
-- fetches metadata from public `announce_peer` addresses
+- uses the crates.io `dht-crawler` crate
+- discovers public DHT torrent metadata through `dht-crawler::DHTServer`
 - fetches BEP 9 torrent metadata from peers
+- fetches metadata from public `announce_peer` addresses
 - parses `name`, `total_size`, and file list
 - prints fetched metadata names
 - writes successful metadata only to remote libSQL
@@ -32,11 +30,9 @@ Optional runtime settings can be provided through environment variables:
 
 ```env
 DHT_LISTEN_ADDR=0.0.0.0:6881
-DHT_JOIN_INTERVAL_MS=1000
-DHT_NEIGHBOR_INTERVAL_MS=1000
 DHT_ROUTING_TABLE_MAX_NODES=100000
-METADATA_MAX_CONCURRENT_FETCHES=512
-METADATA_TIMEOUT_MS=8000
+METADATA_MAX_CONCURRENT_FETCHES=1000
+METADATA_TIMEOUT_SECS=3
 INFO_HASH_QUEUE_SIZE=10000
 PRINT_JSONL=true
 STORAGE_ENABLED=true
@@ -50,19 +46,19 @@ MAX_NAME_NGRAM_LEN=4096
 Run database migrations:
 
 ```bash
-npm run migrate
+cargo run -- migrate
 ```
 
 Start crawler:
 
 ```bash
-npm start
+cargo run -- crawl --print
 ```
 
 Search by name:
 
 ```bash
-npm run search -- "周杰伦" --limit 20
+cargo run -- search "周杰伦" --limit 20
 ```
 
 ## CapRover Deploy
@@ -80,7 +76,8 @@ Set these CapRover app environment variables:
 LIBSQL_DATABASE_URL=https://your-libsql-host.example.com
 LIBSQL_AUTH_TOKEN=replace-with-token
 DHT_LISTEN_ADDR=0.0.0.0:6881
-METADATA_MAX_CONCURRENT_FETCHES=512
+METADATA_MAX_CONCURRENT_FETCHES=1000
+METADATA_TIMEOUT_SECS=3
 PRINT_JSONL=true
 STORAGE_ENABLED=true
 ```
@@ -89,21 +86,21 @@ The deployment path is server-side Docker build:
 
 1. `caprover deploy` uploads this source tree.
 2. CapRover reads `captain-definition`.
-3. The server builds `Dockerfile`, runs `npm ci --omit=dev`, and starts Node.
+3. The server builds `Dockerfile`, runs `cargo build --release`, and starts `dht-lens`.
 
-GitHub Actions only runs Node checks; it does not build or push a GHCR image.
+GitHub Actions runs Rust format and test checks; it does not build or push a GHCR image.
 
 The container starts with:
 
 ```bash
-node /app/js/app.mjs migrate
-node /app/js/app.mjs crawl --print
+dht-lens migrate
+dht-lens crawl --print
 ```
 
 CapRover's normal HTTP routing does not automatically publish UDP DHT traffic.
 For best DHT listener performance, expose UDP `6881` on the host or run this
 service on a host/network where inbound UDP is reachable. This JS crawler relies
-heavily on inbound public DHT traffic and recursive `find_node` expansion.
+heavily on inbound public DHT traffic and `dht-crawler` metadata workers.
 
 ## Database
 
@@ -135,9 +132,9 @@ Example:
 
 ## Current Boundary
 
-This version uses a Node.js crawler based on the supplied `p2pspider` code while
-keeping the existing libSQL schema, trend buckets, and `name_ngram` search. The
-active knobs that matter most now are `DHT_LISTEN_ADDR`, `DHT_BOOTSTRAP_NODES`,
-`DHT_ROUTING_TABLE_MAX_NODES`, `DHT_JOIN_INTERVAL_MS`,
-`DHT_NEIGHBOR_INTERVAL_MS`, `METADATA_TIMEOUT_MS`, and
+This version delegates DHT crawl behavior and BEP 9 metadata fetching to the
+crates.io `dht-crawler` crate, while keeping dht-lens responsible for libSQL
+writes, trend buckets, and `name_ngram` search. The active knobs that matter most
+now are `DHT_LISTEN_ADDR`, `DHT_ROUTING_TABLE_MAX_NODES`,
+`INFO_HASH_QUEUE_SIZE`, `METADATA_TIMEOUT_SECS`, and
 `METADATA_MAX_CONCURRENT_FETCHES`.

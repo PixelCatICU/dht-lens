@@ -17,17 +17,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Check modules
-        run: find js -name '*.mjs' -print | xargs -n 1 node --check
+      - name: Check format
+        run: cargo fmt --check
 
       - name: Run tests
-        run: npm test
+        run: cargo test
