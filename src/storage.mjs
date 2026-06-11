@@ -27,6 +27,24 @@ function normalizeFiles(files = [], fallbackName, fallbackSize) {
   }];
 }
 
+function isReadableName(name) {
+  const value = String(name || '').trim();
+  if (value.length < 2) {
+    return false;
+  }
+
+  const codePoints = Array.from(value);
+  const replacementCount = (value.match(/\uFFFD/g) || []).length;
+  const controlCount = (value.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g) || []).length;
+  const readableCount = codePoints.filter(char => /[\p{L}\p{N}\p{Script=Han}\p{P}\p{S}\p{Zs}]/u.test(char)).length;
+
+  if (replacementCount > 0 || controlCount > 0) {
+    return false;
+  }
+
+  return readableCount / codePoints.length >= 0.8;
+}
+
 export function createTorrentStorage(options = {}) {
   const url = options.url || process.env.LIBSQL_DATABASE_URL;
   const authToken = options.authToken || process.env.LIBSQL_AUTH_TOKEN;
@@ -41,6 +59,10 @@ export function createTorrentStorage(options = {}) {
 
   return {
     async save(metadata) {
+      if (!isReadableName(metadata.name)) {
+        return;
+      }
+
       const infoHashHex = String(metadata.infohash || '').toLowerCase();
       if (!/^[0-9a-f]{40}$/.test(infoHashHex)) {
         return;
