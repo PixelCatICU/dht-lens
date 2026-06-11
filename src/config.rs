@@ -93,19 +93,19 @@ impl AppConfig {
                 bootstrap_nodes,
                 bootstrap_query_limit: env_usize("DHT_BOOTSTRAP_QUERY_LIMIT", 512).clamp(16, 4_096),
                 max_inflight_queries: env_usize("DHT_MAX_INFLIGHT_QUERIES", 10_000),
-                routing_table_max_nodes: env_usize("DHT_ROUTING_TABLE_MAX_NODES", 50_000),
+                routing_table_max_nodes: env_usize("DHT_ROUTING_TABLE_MAX_NODES", 100_000),
                 virtual_nodes: env_usize("DHT_VIRTUAL_NODES", 512).clamp(1, 4_096),
             },
             metadata: MetadataConfig {
-                max_concurrent_fetches: env_usize("METADATA_MAX_CONCURRENT_FETCHES", 128)
+                max_concurrent_fetches: env_usize("METADATA_MAX_CONCURRENT_FETCHES", 1_000)
                     .clamp(16, 1_000),
                 max_peers_per_hash: env_usize("METADATA_MAX_PEERS_PER_HASH", 32).clamp(1, 128),
                 connect_timeout: Duration::from_secs(env_u64("METADATA_CONNECT_TIMEOUT_SECS", 5)),
-                metadata_timeout: Duration::from_secs(env_u64("METADATA_TIMEOUT_SECS", 15)),
+                metadata_timeout: Duration::from_secs(env_u64("METADATA_TIMEOUT_SECS", 3)),
                 max_metadata_size: env_usize("METADATA_MAX_SIZE_MB", 8) * 1024 * 1024,
             },
             pipeline: PipelineConfig {
-                info_hash_queue_size: env_usize("INFO_HASH_QUEUE_SIZE", 200_000),
+                info_hash_queue_size: env_usize("INFO_HASH_QUEUE_SIZE", 10_000),
                 result_queue_size: env_usize("RESULT_QUEUE_SIZE", 50_000),
                 print_jsonl: env_bool("PRINT_JSONL", true),
             },

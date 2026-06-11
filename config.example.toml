@@ -7,7 +7,7 @@ bootstrap_nodes = [
   "router.utorrent.com:6881"
 ]
 max_inflight_queries = 10000
-routing_table_max_nodes = 50000
+routing_table_max_nodes = 100000
 bootstrap_query_limit = 512
 virtual_nodes = 512
 
@@ -15,11 +15,11 @@ virtual_nodes = 512
 max_concurrent_fetches = 1000
 max_peers_per_hash = 32
 connect_timeout_secs = 5
-metadata_timeout_secs = 15
+metadata_timeout_secs = 3
 max_metadata_size_mb = 8
 
 [pipeline]
-info_hash_queue_size = 200000
+info_hash_queue_size = 10000
 result_queue_size = 50000
 print_jsonl = true
 
