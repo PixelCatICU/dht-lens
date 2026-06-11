@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, VecDeque},
     hash::{Hash, Hasher},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use anyhow::Result;
@@ -135,6 +138,19 @@ struct DhtPacket {
     bytes: Vec<u8>,
 }
 
+#[derive(Debug, Default)]
+struct DhtStats {
+    packets_received: AtomicU64,
+    packets_dropped: AtomicU64,
+    get_peers_queries: AtomicU64,
+    announce_peer_queries: AtomicU64,
+    peer_events: AtomicU64,
+    hash_events: AtomicU64,
+    events_dropped: AtomicU64,
+    active_probes_sent: AtomicU64,
+    active_probe_peers: AtomicU64,
+}
+
 pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<()> {
     let mut tasks = Vec::new();
     let nodes = Arc::new(NodeTable::new(
@@ -229,6 +245,7 @@ async fn run_listener(
     tx: mpsc::Sender<InfoHashEvent>,
 ) -> Result<()> {
     let socket = Arc::new(bind_udp_socket(listen_addr)?);
+    let stats = Arc::new(DhtStats::default());
     let node_ids: Arc<[[u8; 20]]> = (0..virtual_node_count)
         .map(|_| random_id())
         .collect::<Vec<_>>()
@@ -250,6 +267,7 @@ async fn run_listener(
         bootstrap_query_limit,
         nodes.clone(),
     ));
+    tokio::spawn(stats_loop(listen_addr, nodes.clone(), stats.clone()));
 
     let mut packet_senders = Vec::with_capacity(packet_workers);
     for worker_id in 0..packet_workers {
@@ -259,6 +277,7 @@ async fn run_listener(
         let worker_node_ids = node_ids.clone();
         let worker_nodes = nodes.clone();
         let worker_tx = tx.clone();
+        let worker_stats = stats.clone();
         tokio::spawn(async move {
             while let Some(packet) = packet_rx.recv().await {
                 if let Err(err) = handle_packet(
@@ -270,6 +289,7 @@ async fn run_listener(
                     get_peers_probe_count,
                     crawl_mode,
                     crawl_response_nodes,
+                    worker_stats.clone(),
                     &worker_tx,
                 )
                 .await
@@ -285,6 +305,7 @@ async fn run_listener(
     let mut dropped_packets = 0u64;
     loop {
         let (len, addr) = socket.recv_from(&mut buf).await?;
+        stats.packets_received.fetch_add(1, Ordering::Relaxed);
         nodes.add(addr);
         let packet = DhtPacket {
             addr,
@@ -294,6 +315,7 @@ async fn run_listener(
         worker_index = worker_index.wrapping_add(1);
         if packet_senders[target].try_send(packet).is_err() {
             dropped_packets = dropped_packets.wrapping_add(1);
+            stats.packets_dropped.fetch_add(1, Ordering::Relaxed);
             if dropped_packets % 10_000 == 0 {
                 warn!(
                     addr = %listen_addr,
@@ -302,6 +324,27 @@ async fn run_listener(
                 );
             }
         }
+    }
+}
+
+async fn stats_loop(listen_addr: SocketAddr, nodes: Arc<NodeTable>, stats: Arc<DhtStats>) {
+    let mut ticker = interval(Duration::from_secs(60));
+    loop {
+        ticker.tick().await;
+        info!(
+            local_addr = %listen_addr,
+            known_nodes = nodes.len(),
+            packets_received = stats.packets_received.swap(0, Ordering::Relaxed),
+            packets_dropped = stats.packets_dropped.swap(0, Ordering::Relaxed),
+            get_peers_queries = stats.get_peers_queries.swap(0, Ordering::Relaxed),
+            announce_peer_queries = stats.announce_peer_queries.swap(0, Ordering::Relaxed),
+            hash_events = stats.hash_events.swap(0, Ordering::Relaxed),
+            peer_events = stats.peer_events.swap(0, Ordering::Relaxed),
+            events_dropped = stats.events_dropped.swap(0, Ordering::Relaxed),
+            active_probes_sent = stats.active_probes_sent.swap(0, Ordering::Relaxed),
+            active_probe_peers = stats.active_probe_peers.swap(0, Ordering::Relaxed),
+            "dht stats"
+        );
     }
 }
 
@@ -421,6 +464,7 @@ async fn handle_packet(
     get_peers_probe_count: usize,
     crawl_mode: bool,
     crawl_response_nodes: usize,
+    stats: Arc<DhtStats>,
     tx: &mpsc::Sender<InfoHashEvent>,
 ) -> Result<()> {
     let value = parse(packet)?;
@@ -440,6 +484,7 @@ async fn handle_packet(
             }
             if let Some(hash) = active_get_peers_hash(transaction) {
                 for peer in parse_compact_peer_values(response) {
+                    stats.active_probe_peers.fetch_add(1, Ordering::Relaxed);
                     emit_event(
                         tx,
                         InfoHashEvent {
@@ -450,6 +495,7 @@ async fn handle_packet(
                             seed_nodes: Vec::new(),
                             seen_at: now_ts(),
                         },
+                        &stats,
                     );
                 }
             }
@@ -488,6 +534,7 @@ async fn handle_packet(
             socket.send_to(&response, addr).await?;
         }
         b"get_peers" => {
+            stats.get_peers_queries.fetch_add(1, Ordering::Relaxed);
             if let Some(hash) = dict_get(args, b"info_hash")
                 .and_then(as_bytes)
                 .and_then(to_hash)
@@ -503,6 +550,7 @@ async fn handle_packet(
                         seed_nodes: event_seed_nodes(&nodes, addr),
                         seen_at: now_ts(),
                     },
+                    &stats,
                 );
                 if get_peers_probe_count > 0 {
                     probe_get_peers(
@@ -512,6 +560,7 @@ async fn handle_packet(
                         addr,
                         hash,
                         get_peers_probe_count,
+                        stats.clone(),
                     )
                     .await;
                 }
@@ -536,6 +585,7 @@ async fn handle_packet(
             socket.send_to(&response, addr).await?;
         }
         b"announce_peer" => {
+            stats.announce_peer_queries.fetch_add(1, Ordering::Relaxed);
             if let Some(hash) = dict_get(args, b"info_hash")
                 .and_then(as_bytes)
                 .and_then(to_hash)
@@ -553,6 +603,7 @@ async fn handle_packet(
                         seed_nodes: event_seed_nodes(&nodes, addr),
                         seen_at: now_ts(),
                     },
+                    &stats,
                 );
                 let response = response(transaction, node_id, BTreeMap::new());
                 socket.send_to(&response, addr).await?;
@@ -567,8 +618,14 @@ async fn handle_packet(
     Ok(())
 }
 
-fn emit_event(tx: &mpsc::Sender<InfoHashEvent>, event: InfoHashEvent) {
+fn emit_event(tx: &mpsc::Sender<InfoHashEvent>, event: InfoHashEvent, stats: &DhtStats) {
+    if event.peer.is_some() {
+        stats.peer_events.fetch_add(1, Ordering::Relaxed);
+    } else {
+        stats.hash_events.fetch_add(1, Ordering::Relaxed);
+    }
     if let Err(err) = tx.try_send(event) {
+        stats.events_dropped.fetch_add(1, Ordering::Relaxed);
         debug!(error = %err, "dropping dht event because pipeline queue is full");
     }
 }
@@ -596,6 +653,7 @@ async fn probe_get_peers(
     addr: SocketAddr,
     info_hash: [u8; 20],
     probe_count: usize,
+    stats: Arc<DhtStats>,
 ) {
     let mut targets = Vec::with_capacity(probe_count.max(1));
     targets.push(addr);
@@ -609,8 +667,13 @@ async fn probe_get_peers(
     {
         let node_id = closest_node_id(&node_ids, &info_hash);
         let request = get_peers_request(&node_id, &info_hash);
-        if let Err(err) = socket.send_to(&request, target).await {
-            debug!(%target, error = %err, "failed to send active get_peers request");
+        match socket.send_to(&request, target).await {
+            Ok(_) => {
+                stats.active_probes_sent.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(err) => {
+                debug!(%target, error = %err, "failed to send active get_peers request");
+            }
         }
     }
 }
