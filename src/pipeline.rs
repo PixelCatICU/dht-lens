@@ -32,6 +32,7 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
     });
 
     let semaphore = Arc::new(Semaphore::new(config.metadata.max_concurrent_fetches));
+    let db_semaphore = Arc::new(Semaphore::new(config.storage.write_concurrency));
     let mut short_seen: HashMap<[u8; 20], SeenState> = HashMap::new();
     let mut pending: HashMap<[u8; 20], PendingFetch> = HashMap::new();
     let mut flush_tick = interval(Duration::from_millis(100));
@@ -40,6 +41,7 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
         result_queue_size = config.pipeline.result_queue_size,
         db_batch_size = config.storage.batch_size,
         db_flush_interval_ms = config.storage.flush_interval.as_millis(),
+        db_write_concurrency = config.storage.write_concurrency,
         peer_collect_window_ms = config.pipeline.peer_collect_window.as_millis(),
         "crawler started"
     );
@@ -72,6 +74,7 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
                         &mut pending,
                         info_hash,
                         &semaphore,
+                        &db_semaphore,
                         &config,
                         &store,
                     )
@@ -79,11 +82,11 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
                 }
             }
             _ = flush_tick.tick() => {
-                flush_ready_pending(&mut pending, &semaphore, &config, &store).await?;
+                flush_ready_pending(&mut pending, &semaphore, &db_semaphore, &config, &store).await?;
             }
         }
     }
-    flush_all_pending(&mut pending, &semaphore, &config, &store).await?;
+    flush_all_pending(&mut pending, &semaphore, &db_semaphore, &config, &store).await?;
     Ok(())
 }
 
@@ -130,6 +133,7 @@ fn add_pending_peers(
 async fn flush_ready_pending(
     pending: &mut HashMap<[u8; 20], PendingFetch>,
     semaphore: &Arc<Semaphore>,
+    db_semaphore: &Arc<Semaphore>,
     config: &AppConfig,
     store: &Option<Arc<LibsqlStore>>,
 ) -> Result<()> {
@@ -142,7 +146,7 @@ async fn flush_ready_pending(
         .collect();
 
     for info_hash in ready {
-        flush_pending_hash(pending, info_hash, semaphore, config, store).await?;
+        flush_pending_hash(pending, info_hash, semaphore, db_semaphore, config, store).await?;
     }
     Ok(())
 }
@@ -150,12 +154,13 @@ async fn flush_ready_pending(
 async fn flush_all_pending(
     pending: &mut HashMap<[u8; 20], PendingFetch>,
     semaphore: &Arc<Semaphore>,
+    db_semaphore: &Arc<Semaphore>,
     config: &AppConfig,
     store: &Option<Arc<LibsqlStore>>,
 ) -> Result<()> {
     let hashes: Vec<_> = pending.keys().copied().collect();
     for info_hash in hashes {
-        flush_pending_hash(pending, info_hash, semaphore, config, store).await?;
+        flush_pending_hash(pending, info_hash, semaphore, db_semaphore, config, store).await?;
     }
     Ok(())
 }
@@ -164,6 +169,7 @@ async fn flush_pending_hash(
     pending: &mut HashMap<[u8; 20], PendingFetch>,
     info_hash: [u8; 20],
     semaphore: &Arc<Semaphore>,
+    db_semaphore: &Arc<Semaphore>,
     config: &AppConfig,
     store: &Option<Arc<LibsqlStore>>,
 ) -> Result<()> {
@@ -175,16 +181,40 @@ async fn flush_pending_hash(
     }
 
     let permit = semaphore.clone().acquire_owned().await?;
+    let db_semaphore = db_semaphore.clone();
     let config = config.clone();
     let store = store.clone();
     tokio::spawn(async move {
-        let _permit = permit;
         let info_hash = hex::encode(fetch.event.info_hash);
-        if let Err(err) = process_hash(fetch.event, fetch.peers, config, store).await {
-            if err.to_string() == "no usable peers for metadata" {
+        let result = fetch_record(fetch.event, fetch.peers, &config).await;
+        drop(permit);
+
+        let record = match result {
+            Ok(record) => record,
+            Err(err) if err.to_string() == "no usable peers for metadata" => {
                 debug!(%info_hash, error = %err, "info_hash dropped");
-            } else {
+                return;
+            }
+            Err(err) => {
                 warn!(%info_hash, error = %err, "info_hash processing failed");
+                return;
+            }
+        };
+
+        log_record(&record, &config);
+        if let Some(store) = store {
+            match db_semaphore.acquire_owned().await {
+                Ok(_db_permit) => {
+                    if let Err(err) = store
+                        .insert_torrent(&record, config.search.max_name_ngram_len)
+                        .await
+                    {
+                        warn!(info_hash = %record.info_hash, error = %err, "torrent storage failed");
+                    }
+                }
+                Err(err) => {
+                    warn!(info_hash = %record.info_hash, error = %err, "db semaphore closed")
+                }
             }
         }
     });
@@ -244,12 +274,11 @@ fn recent_peers_for(
         .unwrap_or_default()
 }
 
-async fn process_hash(
+async fn fetch_record(
     mut event: InfoHashEvent,
     mut peers: Vec<SocketAddr>,
-    config: AppConfig,
-    store: Option<Arc<LibsqlStore>>,
-) -> Result<()> {
+    config: &AppConfig,
+) -> Result<TorrentRecord> {
     let info_hash_hex = hex::encode(event.info_hash);
     if peers.is_empty() {
         debug!(
@@ -258,7 +287,7 @@ async fn process_hash(
             seed_nodes = event.seed_nodes.len(),
             "info_hash observed without peer; skipping metadata fetch"
         );
-        return Ok(());
+        anyhow::bail!("no usable peers for metadata");
     }
 
     peers.sort_unstable();
@@ -271,8 +300,11 @@ async fn process_hash(
         source = ?event.source,
         "processing info_hash"
     );
-    let metadata = fetch_from_first_peer(&peers, event.info_hash, &config).await?;
-    let record = build_record(event, metadata, &config);
+    let metadata = fetch_from_first_peer(&peers, event.info_hash, config).await?;
+    Ok(build_record(event, metadata, config))
+}
+
+fn log_record(record: &TorrentRecord, config: &AppConfig) {
     info!(
         info_hash = %record.info_hash,
         name = %record.name,
@@ -283,14 +315,13 @@ async fn process_hash(
     );
 
     if config.pipeline.print_jsonl {
-        println!("{}", serde_json::to_string(&record)?);
+        match serde_json::to_string(record) {
+            Ok(json) => println!("{json}"),
+            Err(err) => {
+                warn!(info_hash = %record.info_hash, error = %err, "failed to serialize torrent record")
+            }
+        }
     }
-    if let Some(store) = store {
-        store
-            .insert_torrent(&record, config.search.max_name_ngram_len)
-            .await?;
-    }
-    Ok(())
 }
 
 async fn fetch_from_first_peer(
