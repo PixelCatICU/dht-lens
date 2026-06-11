@@ -10,7 +10,7 @@ The first version runs as a single-node long-lived service:
 - fetches BEP 9 torrent metadata from peers
 - fetches metadata from public `announce_peer` addresses
 - parses `name`, `total_size`, and file list
-- prints fetched metadata names only, plus error/warn logs
+- logs crawler stats and error/warn events without printing metadata names by default
 - writes successful metadata only to remote libSQL
 - indexes `name_ngram` with libSQL FTS5
 - stores 5-minute and hourly trend buckets
@@ -34,7 +34,7 @@ DHT_ROUTING_TABLE_MAX_NODES=100000
 METADATA_MAX_CONCURRENT_FETCHES=1000
 METADATA_TIMEOUT_SECS=15
 INFO_HASH_QUEUE_SIZE=10000
-PRINT_JSONL=true
+PRINT_JSONL=false
 STORAGE_ENABLED=true
 MAX_FILES_PER_TORRENT=2000
 MAX_FILE_PATH_LEN=1024
@@ -52,7 +52,7 @@ cargo run -- migrate
 Start crawler:
 
 ```bash
-cargo run -- crawl --print
+cargo run -- crawl
 ```
 
 Search by name:
@@ -86,7 +86,7 @@ LIBSQL_AUTH_TOKEN=replace-with-token
 DHT_LISTEN_ADDR=0.0.0.0:6881
 METADATA_MAX_CONCURRENT_FETCHES=1000
 METADATA_TIMEOUT_SECS=15
-PRINT_JSONL=true
+PRINT_JSONL=false
 STORAGE_ENABLED=true
 ```
 
@@ -116,7 +116,7 @@ The container starts with:
 
 ```bash
 dht-lens migrate
-dht-lens crawl --print
+dht-lens crawl
 ```
 
 CapRover's normal HTTP routing does not automatically publish UDP DHT traffic.

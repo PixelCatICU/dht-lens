@@ -28,7 +28,7 @@ struct Cli {
 enum Command {
     Migrate,
     Crawl {
-        #[arg(long, default_value_t = true)]
+        #[arg(long, default_value_t = false)]
         print: bool,
     },
     Search {

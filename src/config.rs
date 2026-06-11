@@ -64,7 +64,7 @@ impl AppConfig {
                 timeout: Duration::from_secs(env_u64("METADATA_TIMEOUT_SECS", 15).clamp(1, 120)),
             },
             pipeline: PipelineConfig {
-                print_jsonl: env_bool("PRINT_JSONL", true),
+                print_jsonl: env_bool("PRINT_JSONL", false),
                 stats_interval: Duration::from_secs(
                     env_u64("STATS_INTERVAL_SECS", 60).clamp(5, 600),
                 ),
