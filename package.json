@@ -1,6 +1,6 @@
 {
-  "name": "p2pspider",
-  "description": "DHT Crawler + BitTorrent Crawler = P2P Spider",
+  "name": "dht-lens",
+  "description": "DHT Crawler + BitTorrent Crawler = DHT Lens",
   "version": "0.1.0",
   "type": "module",
   "author": {

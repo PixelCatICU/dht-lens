@@ -1,6 +1,6 @@
-import p2pspider from './src/index.mjs';
+import dhtLens from './src/index.mjs';
 
-p2pspider({
+dhtLens({
   address: '0.0.0.0',
   port: 6881,
   nodesMaxSize: 4000
