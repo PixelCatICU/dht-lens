@@ -18,9 +18,9 @@ virtual_nodes = 512
 
 [metadata]
 max_concurrent_fetches = 4096
-max_peers_per_hash = 32
-connect_timeout_secs = 2
-metadata_timeout_secs = 2
+max_peers_per_hash = 64
+connect_timeout_secs = 4
+metadata_timeout_secs = 8
 max_metadata_size_mb = 8
 
 [pipeline]
