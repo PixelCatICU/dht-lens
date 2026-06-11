@@ -11,16 +11,16 @@ ARG CAPROVER_GIT_COMMIT_SHA=local
 
 RUN echo "release=${DHT_LENS_RELEASE_TAG} commit=${CAPROVER_GIT_COMMIT_SHA}" \
   && curl --fail --location --retry 5 --connect-timeout 20 \
-    -o /tmp/dht-lens-linux-amd64.tar.gz \
-    "https://github.com/PixelCatICU/dht-lens/releases/download/${DHT_LENS_RELEASE_TAG}/dht-lens-linux-amd64.tar.gz" \
+    -o /tmp/dht-lens-linux-amd64 \
+    "https://github.com/PixelCatICU/dht-lens/releases/download/${DHT_LENS_RELEASE_TAG}/dht-lens-linux-amd64" \
   && curl --fail --location --retry 5 --connect-timeout 20 \
     -o /tmp/SHA256SUMS \
     "https://github.com/PixelCatICU/dht-lens/releases/download/${DHT_LENS_RELEASE_TAG}/SHA256SUMS" \
   && cd /tmp \
   && sha256sum -c SHA256SUMS \
-  && tar -xzf dht-lens-linux-amd64.tar.gz -C /usr/local/bin dht-lens \
+  && mv /tmp/dht-lens-linux-amd64 /usr/local/bin/dht-lens \
   && chmod +x /usr/local/bin/dht-lens \
-  && rm -f /tmp/dht-lens-linux-amd64.tar.gz /tmp/SHA256SUMS
+  && rm -f /tmp/SHA256SUMS
 
 COPY entrypoint.sh /usr/local/bin/dht-lens-entrypoint.sh
 

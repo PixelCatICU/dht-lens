@@ -74,7 +74,7 @@ GitHub Actions builds the Linux executable on every `main` push and uploads it
 to the rolling GitHub Release tag `latest`:
 
 ```text
-dht-lens-linux-amd64.tar.gz
+dht-lens-linux-amd64
 SHA256SUMS
 ```
 

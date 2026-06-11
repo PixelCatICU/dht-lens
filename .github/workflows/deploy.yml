@@ -48,9 +48,8 @@ jobs:
       - name: Pack release assets
         run: |
           mkdir -p dist
-          cp target/release/dht-lens dist/dht-lens
-          tar -C dist -czf dist/dht-lens-linux-amd64.tar.gz dht-lens
-          (cd dist && sha256sum dht-lens-linux-amd64.tar.gz > SHA256SUMS)
+          cp target/release/dht-lens dist/dht-lens-linux-amd64
+          (cd dist && sha256sum dht-lens-linux-amd64 > SHA256SUMS)
 
       - name: Publish rolling release
         env:
