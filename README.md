@@ -69,12 +69,12 @@ This repo includes:
 - `.github/workflows/deploy.yml`
 - `entrypoint.sh`
 
-GitHub Actions builds and pushes the runtime image to GHCR on every `main`
-push:
+GitHub Actions builds the runtime image on every `main` push and uploads it to
+the rolling GitHub Release tag `latest`:
 
 ```text
-ghcr.io/pixelcaticu/dht-lens:main
-ghcr.io/pixelcaticu/dht-lens:<commit-sha>
+dht-lens-docker-image-linux-amd64.tar.gz
+SHA256SUMS
 ```
 
 Set these service environment variables:
@@ -89,11 +89,13 @@ PRINT_JSONL=true
 STORAGE_ENABLED=true
 ```
 
-The server should pull and run the prebuilt image instead of building from
-source on the server:
+The server should download and load the prebuilt image instead of building from
+source on the server or pulling from GHCR:
 
 ```bash
-docker pull ghcr.io/pixelcaticu/dht-lens:main
+curl -L -o /tmp/dht-lens-image.tar.gz \
+  https://github.com/PixelCatICU/dht-lens/releases/download/latest/dht-lens-docker-image-linux-amd64.tar.gz
+docker load -i /tmp/dht-lens-image.tar.gz
 ```
 
 For Docker Swarm host-mode UDP deployment, stop the old replica before updating
