@@ -168,6 +168,7 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
     let v4_virtual_node_count = config.virtual_nodes;
     let v4_bootstrap_query_limit = config.bootstrap_query_limit;
     let v4_get_peers_probe_count = config.get_peers_probe_count;
+    let v4_get_peers_probe_depth = config.get_peers_probe_depth;
     let v4_packet_workers = config.packet_workers;
     let v4_packet_queue_size = config.packet_queue_size;
     let v4_crawl_mode = config.crawl_mode;
@@ -179,6 +180,7 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
             v4_virtual_node_count,
             v4_bootstrap_query_limit,
             v4_get_peers_probe_count,
+            v4_get_peers_probe_depth,
             v4_packet_workers,
             v4_packet_queue_size,
             v4_crawl_mode,
@@ -199,6 +201,7 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
         let v6_virtual_node_count = config.virtual_nodes;
         let v6_bootstrap_query_limit = config.bootstrap_query_limit;
         let v6_get_peers_probe_count = config.get_peers_probe_count;
+        let v6_get_peers_probe_depth = config.get_peers_probe_depth;
         let v6_packet_workers = config.packet_workers;
         let v6_packet_queue_size = config.packet_queue_size;
         let v6_crawl_mode = config.crawl_mode;
@@ -210,6 +213,7 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
                 v6_virtual_node_count,
                 v6_bootstrap_query_limit,
                 v6_get_peers_probe_count,
+                v6_get_peers_probe_depth,
                 v6_packet_workers,
                 v6_packet_queue_size,
                 v6_crawl_mode,
@@ -237,6 +241,7 @@ async fn run_listener(
     virtual_node_count: usize,
     bootstrap_query_limit: usize,
     get_peers_probe_count: usize,
+    get_peers_probe_depth: u8,
     packet_workers: usize,
     packet_queue_size: usize,
     crawl_mode: bool,
@@ -287,6 +292,7 @@ async fn run_listener(
                     packet.addr,
                     &packet.bytes,
                     get_peers_probe_count,
+                    get_peers_probe_depth,
                     crawl_mode,
                     crawl_response_nodes,
                     worker_stats.clone(),
@@ -462,6 +468,7 @@ async fn handle_packet(
     addr: SocketAddr,
     packet: &[u8],
     get_peers_probe_count: usize,
+    get_peers_probe_depth: u8,
     crawl_mode: bool,
     crawl_response_nodes: usize,
     stats: Arc<DhtStats>,
@@ -476,13 +483,15 @@ async fn handle_packet(
     let y = dict_get(&dict, b"y").and_then(as_bytes).unwrap_or(b"");
     if y == b"r" {
         if let Some(Value::Dict(response)) = dict_get(&dict, b"r") {
+            let mut response_nodes = Vec::new();
             if let Some(bytes) = dict_get(response, b"nodes").and_then(as_bytes) {
-                nodes.add_many(parse_compact_nodes(bytes));
+                response_nodes.extend(parse_compact_nodes(bytes));
             }
             if let Some(bytes) = dict_get(response, b"nodes6").and_then(as_bytes) {
-                nodes.add_many(parse_compact_nodes6(bytes));
+                response_nodes.extend(parse_compact_nodes6(bytes));
             }
-            if let Some(hash) = active_get_peers_hash(transaction) {
+            nodes.add_many(response_nodes.iter().copied());
+            if let Some((hash, remaining_depth)) = active_get_peers_hash(transaction) {
                 for peer in parse_compact_peer_values(response) {
                     stats.active_probe_peers.fetch_add(1, Ordering::Relaxed);
                     emit_event(
@@ -497,6 +506,19 @@ async fn handle_packet(
                         },
                         &stats,
                     );
+                }
+                if remaining_depth > 0 && get_peers_probe_count > 0 {
+                    probe_get_peers_targets(
+                        socket.clone(),
+                        node_ids.clone(),
+                        response_nodes,
+                        addr,
+                        hash,
+                        get_peers_probe_count,
+                        remaining_depth - 1,
+                        stats.clone(),
+                    )
+                    .await;
                 }
             }
         }
@@ -560,6 +582,7 @@ async fn handle_packet(
                         addr,
                         hash,
                         get_peers_probe_count,
+                        get_peers_probe_depth,
                         stats.clone(),
                     )
                     .await;
@@ -653,6 +676,7 @@ async fn probe_get_peers(
     addr: SocketAddr,
     info_hash: [u8; 20],
     probe_count: usize,
+    remaining_depth: u8,
     stats: Arc<DhtStats>,
 ) {
     let mut targets = Vec::with_capacity(probe_count.max(1));
@@ -660,13 +684,36 @@ async fn probe_get_peers(
     if probe_count > 1 {
         targets.extend(nodes.sample(addr, probe_count - 1));
     }
+    probe_get_peers_targets(
+        socket,
+        node_ids,
+        targets,
+        addr,
+        info_hash,
+        probe_count,
+        remaining_depth,
+        stats,
+    )
+    .await;
+}
+
+async fn probe_get_peers_targets(
+    socket: Arc<UdpSocket>,
+    node_ids: Arc<[[u8; 20]]>,
+    targets: Vec<SocketAddr>,
+    family_addr: SocketAddr,
+    info_hash: [u8; 20],
+    probe_count: usize,
+    remaining_depth: u8,
+    stats: Arc<DhtStats>,
+) {
     for target in unique(targets)
         .into_iter()
-        .filter(|target| target.is_ipv4() == addr.is_ipv4() && is_global_address(target))
+        .filter(|target| target.is_ipv4() == family_addr.is_ipv4() && is_global_address(target))
         .take(probe_count)
     {
         let node_id = closest_node_id(&node_ids, &info_hash);
-        let request = get_peers_request(&node_id, &info_hash);
+        let request = get_peers_request(&node_id, &info_hash, remaining_depth);
         match socket.send_to(&request, target).await {
             Ok(_) => {
                 stats.active_probes_sent.fetch_add(1, Ordering::Relaxed);
@@ -678,7 +725,7 @@ async fn probe_get_peers(
     }
 }
 
-fn get_peers_request(node_id: &[u8; 20], info_hash: &[u8; 20]) -> Vec<u8> {
+fn get_peers_request(node_id: &[u8; 20], info_hash: &[u8; 20], remaining_depth: u8) -> Vec<u8> {
     let mut args = BTreeMap::new();
     args.insert(b"id".to_vec(), Value::Bytes(node_id.to_vec()));
     args.insert(b"info_hash".to_vec(), Value::Bytes(info_hash.to_vec()));
@@ -686,7 +733,7 @@ fn get_peers_request(node_id: &[u8; 20], info_hash: &[u8; 20]) -> Vec<u8> {
     let mut root = BTreeMap::new();
     root.insert(
         b"t".to_vec(),
-        Value::Bytes(active_get_peers_transaction(info_hash)),
+        Value::Bytes(active_get_peers_transaction(info_hash, remaining_depth)),
     );
     root.insert(b"y".to_vec(), Value::Bytes(b"q".to_vec()));
     root.insert(b"q".to_vec(), Value::Bytes(b"get_peers".to_vec()));
@@ -697,18 +744,25 @@ fn get_peers_request(node_id: &[u8; 20], info_hash: &[u8; 20]) -> Vec<u8> {
     out
 }
 
-fn active_get_peers_transaction(info_hash: &[u8; 20]) -> Vec<u8> {
-    let mut transaction = Vec::with_capacity(21);
+fn active_get_peers_transaction(info_hash: &[u8; 20], remaining_depth: u8) -> Vec<u8> {
+    let mut transaction = Vec::with_capacity(22);
     transaction.push(b'g');
+    transaction.push(remaining_depth);
     transaction.extend_from_slice(info_hash);
     transaction
 }
 
-fn active_get_peers_hash(transaction: &[u8]) -> Option<[u8; 20]> {
-    if transaction.len() != 21 || transaction.first() != Some(&b'g') {
+fn active_get_peers_hash(transaction: &[u8]) -> Option<([u8; 20], u8)> {
+    if transaction.first() != Some(&b'g') {
         return None;
     }
-    to_hash(&transaction[1..])
+    if transaction.len() == 22 {
+        return to_hash(&transaction[2..]).map(|hash| (hash, transaction[1]));
+    }
+    if transaction.len() == 21 {
+        return to_hash(&transaction[1..]).map(|hash| (hash, 0));
+    }
+    None
 }
 
 fn parse_compact_nodes(bytes: &[u8]) -> Vec<SocketAddr> {
