@@ -95,7 +95,7 @@ impl AppConfig {
                 bootstrap_nodes,
                 bootstrap_query_limit: env_usize("DHT_BOOTSTRAP_QUERY_LIMIT", 1024)
                     .clamp(16, 8_192),
-                get_peers_probe_count: env_usize("DHT_GET_PEERS_PROBE_COUNT", 4).clamp(0, 64),
+                get_peers_probe_count: env_usize("DHT_GET_PEERS_PROBE_COUNT", 0).clamp(0, 64),
                 routing_table_max_nodes: env_usize("DHT_ROUTING_TABLE_MAX_NODES", 200_000),
                 virtual_nodes: env_usize("DHT_VIRTUAL_NODES", 512).clamp(1, 4_096),
             },
