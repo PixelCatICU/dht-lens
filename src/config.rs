@@ -109,7 +109,7 @@ impl AppConfig {
                 bootstrap_nodes,
                 bootstrap_query_limit: env_usize("DHT_BOOTSTRAP_QUERY_LIMIT", 1024)
                     .clamp(16, 8_192),
-                get_peers_probe_count: env_usize("DHT_GET_PEERS_PROBE_COUNT", 2).clamp(0, 64),
+                get_peers_probe_count: env_usize("DHT_GET_PEERS_PROBE_COUNT", 0).clamp(0, 64),
                 get_peers_probe_depth: env_usize("DHT_GET_PEERS_PROBE_DEPTH", 1).clamp(0, 8) as u8,
                 get_peers_probe_sample_rate: env_usize("DHT_GET_PEERS_PROBE_SAMPLE_RATE", 16)
                     .clamp(1, 1_024),

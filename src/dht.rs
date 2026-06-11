@@ -256,6 +256,8 @@ async fn run_listener(
 ) -> Result<()> {
     let socket = Arc::new(bind_udp_socket(listen_addr)?);
     let stats = Arc::new(DhtStats::default());
+    let mut token_secret = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut token_secret);
     let node_ids: Arc<[[u8; 20]]> = (0..virtual_node_count)
         .map(|_| random_id())
         .collect::<Vec<_>>()
@@ -291,6 +293,7 @@ async fn run_listener(
         let worker_nodes = nodes.clone();
         let worker_tx = tx.clone();
         let worker_stats = stats.clone();
+        let worker_token_secret = token_secret;
         tokio::spawn(async move {
             while let Some(packet) = packet_rx.recv().await {
                 if let Err(err) = handle_packet(
@@ -304,6 +307,7 @@ async fn run_listener(
                     get_peers_probe_sample_rate,
                     crawl_mode,
                     crawl_response_nodes,
+                    worker_token_secret,
                     worker_stats.clone(),
                     &worker_tx,
                 )
@@ -481,6 +485,7 @@ async fn handle_packet(
     get_peers_probe_sample_rate: usize,
     crawl_mode: bool,
     crawl_response_nodes: usize,
+    token_secret: [u8; 16],
     stats: Arc<DhtStats>,
     tx: &mpsc::Sender<InfoHashEvent>,
 ) -> Result<()> {
@@ -606,7 +611,10 @@ async fn handle_packet(
                 .map(|hash| closest_node_id(&node_ids, &hash))
                 .unwrap_or(node_ids[0]);
             let mut extra = BTreeMap::new();
-            extra.insert(b"token".to_vec(), Value::Bytes(b"dht-lens".to_vec()));
+            extra.insert(
+                b"token".to_vec(),
+                Value::Bytes(generate_token(addr, &token_secret).to_vec()),
+            );
             let node_limit = if crawl_mode {
                 crawl_response_nodes
             } else {
@@ -621,6 +629,12 @@ async fn handle_packet(
         }
         b"announce_peer" => {
             stats.announce_peer_queries.fetch_add(1, Ordering::Relaxed);
+            let Some(token) = dict_get(args, b"token").and_then(as_bytes) else {
+                return Ok(());
+            };
+            if !validate_token(token, addr, &token_secret) {
+                return Ok(());
+            }
             if let Some(hash) = dict_get(args, b"info_hash")
                 .and_then(as_bytes)
                 .and_then(to_hash)
@@ -671,6 +685,20 @@ fn should_probe_get_peers_hash(info_hash: &[u8; 20], sample_rate: usize) -> bool
     }
     let bucket = u16::from_be_bytes([info_hash[0], info_hash[1]]) as usize;
     bucket % sample_rate == 0
+}
+
+fn generate_token(addr: SocketAddr, secret: &[u8; 16]) -> [u8; 8] {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    match addr.ip() {
+        IpAddr::V4(ip) => ip.octets().hash(&mut hasher),
+        IpAddr::V6(ip) => ip.octets().hash(&mut hasher),
+    }
+    secret.hash(&mut hasher);
+    hasher.finish().to_le_bytes()
+}
+
+fn validate_token(token: &[u8], addr: SocketAddr, secret: &[u8; 16]) -> bool {
+    token == generate_token(addr, secret)
 }
 
 fn find_node_request(node_id: &[u8; 20], target: &[u8; 20]) -> Vec<u8> {
