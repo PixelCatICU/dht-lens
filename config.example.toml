@@ -13,6 +13,7 @@ virtual_nodes = 512
 
 [metadata]
 max_concurrent_fetches = 1000
+max_peers_per_hash = 32
 connect_timeout_secs = 5
 metadata_timeout_secs = 15
 max_metadata_size_mb = 8

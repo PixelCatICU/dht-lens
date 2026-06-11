@@ -25,6 +25,7 @@ pub struct DhtConfig {
 #[derive(Debug, Clone)]
 pub struct MetadataConfig {
     pub max_concurrent_fetches: usize,
+    pub max_peers_per_hash: usize,
     pub connect_timeout: Duration,
     pub metadata_timeout: Duration,
     pub max_metadata_size: usize,
@@ -98,6 +99,7 @@ impl AppConfig {
             metadata: MetadataConfig {
                 max_concurrent_fetches: env_usize("METADATA_MAX_CONCURRENT_FETCHES", 128)
                     .clamp(16, 1_000),
+                max_peers_per_hash: env_usize("METADATA_MAX_PEERS_PER_HASH", 32).clamp(1, 128),
                 connect_timeout: Duration::from_secs(env_u64("METADATA_CONNECT_TIMEOUT_SECS", 5)),
                 metadata_timeout: Duration::from_secs(env_u64("METADATA_TIMEOUT_SECS", 15)),
                 max_metadata_size: env_usize("METADATA_MAX_SIZE_MB", 8) * 1024 * 1024,

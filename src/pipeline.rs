@@ -112,7 +112,7 @@ async fn fetch_from_first_peer(
     info_hash: [u8; 20],
     config: &AppConfig,
 ) -> Result<ParsedMetadata> {
-    let max_attempts = peers.len().min(8);
+    let max_attempts = peers.len().min(config.metadata.max_peers_per_hash);
     let mut tasks = JoinSet::new();
     for peer in peers.iter().take(max_attempts).copied() {
         let metadata_config = config.metadata.clone();
