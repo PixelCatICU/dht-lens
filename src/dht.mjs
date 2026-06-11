@@ -25,6 +25,7 @@ export default class DHTSpider {
     this.udp = dgram.createSocket('udp4');
     this.ktable = new KTable(options.nodesMaxSize || NODES_MAX_SIZE);
     this.bootstrapNodes = options.bootstrapNodes || BOOTSTRAP_NODES;
+    this.onAnnouncePeer = options.onAnnouncePeer;
   }
 
   sendKRPC(msg, rinfo = {}) {
@@ -132,6 +133,14 @@ export default class DHTSpider {
         id: utils.genNeighborID(nid, this.ktable.nid)
       }
     }, rinfo);
+
+    if (this.onAnnouncePeer) {
+      this.onAnnouncePeer({
+        infohash: infohash.toString('hex'),
+        address: rinfo.address,
+        port
+      });
+    }
 
     this.btclient.download({
       address: rinfo.address,

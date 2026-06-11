@@ -6,7 +6,18 @@ const storage = createTorrentStorage();
 dhtLens({
   address: '0.0.0.0',
   port: 6881,
-  nodesMaxSize: 4000
+  nodesMaxSize: 4000,
+  onAnnouncePeer: async data => {
+    if (!storage) {
+      return;
+    }
+
+    try {
+      await storage.observe(data);
+    } catch (error) {
+      console.error('failed to save torrent observation:', error.message);
+    }
+  }
 }, async data => {
   console.log(new Date().getTimezoneOffset() + ' ' + data.name);
 

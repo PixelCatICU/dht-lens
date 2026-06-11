@@ -45,6 +45,18 @@ function isReadableName(name) {
   return readableCount / codePoints.length >= 0.8;
 }
 
+function normalizeInfoHash(infohash) {
+  const infoHashHex = String(infohash || '').toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(infoHashHex)) {
+    return null;
+  }
+
+  return {
+    infoHashHex,
+    infoHash: Buffer.from(infoHashHex, 'hex')
+  };
+}
+
 export function createTorrentStorage(options = {}) {
   const url = options.url || process.env.LIBSQL_DATABASE_URL;
   const authToken = options.authToken || process.env.LIBSQL_AUTH_TOKEN;
@@ -58,25 +70,19 @@ export function createTorrentStorage(options = {}) {
   const source = Number(process.env.DHT_LENS_SOURCE || 0);
 
   return {
-    async save(metadata) {
-      if (!isReadableName(metadata.name)) {
+    async observe(data) {
+      const normalized = normalizeInfoHash(data.infohash);
+      if (!normalized) {
         return;
       }
 
-      const infoHashHex = String(metadata.infohash || '').toLowerCase();
-      if (!/^[0-9a-f]{40}$/.test(infoHashHex)) {
-        return;
-      }
-
-      const infoHash = Buffer.from(infoHashHex, 'hex');
+      const { infoHash, infoHashHex } = normalized;
       const now = toUnixSeconds();
-      const files = normalizeFiles(metadata.files, metadata.name, metadata.size);
-      const totalSize = Number(metadata.size || files.reduce((sum, file) => sum + file.size, 0));
-      const peerCount = Number(metadata.peerCount || metadata.peer_count || 1);
+      const peerCount = Number(data.peerCount || data.peer_count || 1);
       const bucket5m = bucketStart(now, FIVE_MINUTES);
       const bucketHourly = bucketStart(now, ONE_HOUR);
 
-      const statements = [
+      await client.batch([
         {
           sql: `
             INSERT INTO torrents (
@@ -84,43 +90,21 @@ export function createTorrentStorage(options = {}) {
               files_stored_count, peer_count, hot_score, source,
               first_seen_at, last_seen_at, metadata_fetched_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            VALUES (?, ?, '', 0, 0, 0, ?, 1, ?, ?, ?, NULL)
             ON CONFLICT(info_hash) DO UPDATE SET
-              name = excluded.name,
-              total_size = excluded.total_size,
-              file_count = excluded.file_count,
-              files_stored_count = excluded.files_stored_count,
               peer_count = max(torrents.peer_count, excluded.peer_count),
               hot_score = torrents.hot_score + 1,
               source = excluded.source,
-              last_seen_at = excluded.last_seen_at,
-              metadata_fetched_at = excluded.metadata_fetched_at
+              last_seen_at = excluded.last_seen_at
           `,
           args: [
             infoHash,
             infoHashHex,
-            metadata.name || '',
-            totalSize,
-            files.length,
-            files.length,
             peerCount,
             source,
             now,
-            now,
             now
           ]
-        },
-        {
-          sql: 'DELETE FROM torrent_files WHERE info_hash = ?',
-          args: [infoHash]
-        },
-        {
-          sql: 'DELETE FROM torrent_search WHERE info_hash_hex = ?',
-          args: [infoHashHex]
-        },
-        {
-          sql: 'INSERT INTO torrent_search (info_hash_hex, name_ngram) VALUES (?, ?)',
-          args: [infoHashHex, metadata.name || '']
         },
         {
           sql: `
@@ -149,6 +133,66 @@ export function createTorrentStorage(options = {}) {
               updated_at = excluded.updated_at
           `,
           args: [infoHash, bucketHourly, peerCount, source, now]
+        }
+      ], 'write');
+    },
+
+    async save(metadata) {
+      if (!isReadableName(metadata.name)) {
+        return;
+      }
+
+      const normalized = normalizeInfoHash(metadata.infohash);
+      if (!normalized) {
+        return;
+      }
+
+      const { infoHash, infoHashHex } = normalized;
+      const now = toUnixSeconds();
+      const files = normalizeFiles(metadata.files, metadata.name, metadata.size);
+      const totalSize = Number(metadata.size || files.reduce((sum, file) => sum + file.size, 0));
+
+      const statements = [
+        {
+          sql: `
+            INSERT INTO torrents (
+              info_hash, info_hash_hex, name, total_size, file_count,
+              files_stored_count, peer_count, hot_score, source,
+              first_seen_at, last_seen_at, metadata_fetched_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
+            ON CONFLICT(info_hash) DO UPDATE SET
+              name = excluded.name,
+              total_size = excluded.total_size,
+              file_count = excluded.file_count,
+              files_stored_count = excluded.files_stored_count,
+              source = excluded.source,
+              metadata_fetched_at = excluded.metadata_fetched_at
+          `,
+          args: [
+            infoHash,
+            infoHashHex,
+            metadata.name || '',
+            totalSize,
+            files.length,
+            files.length,
+            source,
+            now,
+            now,
+            now
+          ]
+        },
+        {
+          sql: 'DELETE FROM torrent_files WHERE info_hash = ?',
+          args: [infoHash]
+        },
+        {
+          sql: 'DELETE FROM torrent_search WHERE info_hash_hex = ?',
+          args: [infoHashHex]
+        },
+        {
+          sql: 'INSERT INTO torrent_search (info_hash_hex, name_ngram) VALUES (?, ?)',
+          args: [infoHashHex, metadata.name || '']
         }
       ];
 

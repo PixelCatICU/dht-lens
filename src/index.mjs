@@ -27,6 +27,7 @@ export default (options = {}, callback) => {
     btclient,
     address: '0.0.0.0',
     port: options.port || 6219,
-    nodesMaxSize: options.nodesMaxSize || 4000 // 值越大, 网络, 内存, CPU 消耗就越大, 收集速度会变慢.
+    nodesMaxSize: options.nodesMaxSize || 4000, // 值越大, 网络, 内存, CPU 消耗就越大, 收集速度会变慢.
+    onAnnouncePeer: options.onAnnouncePeer
   });
 };
