@@ -306,21 +306,12 @@ async fn fetch_record(
 
 fn log_record(record: &TorrentRecord, config: &AppConfig) {
     info!(
-        info_hash = %record.info_hash,
         name = %record.name,
-        total_size = record.total_size,
-        file_count = record.file_count,
-        peer_count = record.peer_count,
         "metadata fetched"
     );
 
     if config.pipeline.print_jsonl {
-        match serde_json::to_string(record) {
-            Ok(json) => println!("{json}"),
-            Err(err) => {
-                warn!(info_hash = %record.info_hash, error = %err, "failed to serialize torrent record")
-            }
-        }
+        println!("{}", record.name);
     }
 }
 
