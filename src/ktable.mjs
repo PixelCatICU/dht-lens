@@ -1,4 +1,4 @@
-import utils from './utils.js';
+import utils from './utils.mjs';
 
 export default class KTable {
   /**
@@ -6,7 +6,7 @@ export default class KTable {
    * @param  {[type]} maxsize [description]
    * @return {[type]}         [description]
    */
-  constructor(maxsize = 10){
+  constructor(maxsize = 10) {
     this.nid = utils.randomID();
     this.nodes = [];
     this.maxsize = maxsize;
@@ -16,7 +16,7 @@ export default class KTable {
    * @param  {[type]} node [description]
    * @return {[type]}      [description]
    */
-  push(node){
+  push(node) {
     if (this.nodes.length >= this.maxsize) {
       return;
     }

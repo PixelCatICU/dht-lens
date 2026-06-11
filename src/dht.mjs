@@ -1,7 +1,7 @@
 import dgram from 'dgram';
 import bencode from 'bencode';
-import utils from './utils.js';
-import KTable from './ktable.js';
+import utils from './utils.mjs';
+import KTable from './ktable.mjs';
 
 const BOOTSTRAP_NODES = [
   ['router.bittorrent.com', 6881],
@@ -12,14 +12,13 @@ const TID_LENGTH = 4;
 const NODES_MAX_SIZE = 1000;
 const TOKEN_LENGTH = 2;
 
-
 export default class DHTSpider {
   /**
    * [constructor description]
    * @param  {Object} options [description]
    * @return {[type]}         [description]
    */
-  constructor(options = {}){
+  constructor(options = {}) {
     this.btclient = options.btclient;
     this.address = options.address;
     this.port = options.port;
@@ -28,7 +27,7 @@ export default class DHTSpider {
     this.bootstrapNodes = options.bootstrapNodes || BOOTSTRAP_NODES;
   }
 
-  sendKRPC(msg, rinfo = {}){
+  sendKRPC(msg, rinfo = {}) {
     if (rinfo.port >= 65536 || rinfo.port <= 0) {
       return;
     }
@@ -36,17 +35,17 @@ export default class DHTSpider {
     this.udp.send(buf, 0, buf.length, rinfo.port, rinfo.address);
   }
 
-  onFindNodeResponse(nodes){
+  onFindNodeResponse(nodes) {
     nodes = utils.decodeNodes(nodes);
     nodes.forEach(node => {
       if (node.address !== this.address && node.nid !== this.ktable.nid
-        && node.port < 65536 && node.port > 0) {
+          && node.port < 65536 && node.port > 0) {
         this.ktable.push(node);
       }
     });
   }
 
-  sendFindNodeRequest(rinfo, nid){
+  sendFindNodeRequest(rinfo, nid) {
     let _nid = nid !== undefined ? utils.genNeighborID(nid, this.ktable.nid) : this.ktable.nid;
     let msg = {
       t: utils.randomID().slice(0, TID_LENGTH),
@@ -60,7 +59,7 @@ export default class DHTSpider {
     this.sendKRPC(msg, rinfo);
   }
 
-  joinDHTNetwork(){
+  joinDHTNetwork() {
     this.bootstrapNodes.forEach(node => {
       this.sendFindNodeRequest({
         address: node[0],
@@ -69,7 +68,7 @@ export default class DHTSpider {
     });
   }
 
-  makeNeighbours(){
+  makeNeighbours() {
     this.ktable.nodes.forEach(node => {
       this.sendFindNodeRequest({
         address: node.address,
@@ -79,7 +78,7 @@ export default class DHTSpider {
     this.ktable.nodes = [];
   }
 
-  onGetPeersRequest(msg, rinfo){
+  onGetPeersRequest(msg, rinfo) {
     let infohash = msg.a.info_hash;
     let tid = msg.t;
     let nid = msg.a.id;
@@ -95,12 +94,12 @@ export default class DHTSpider {
       r: {
         id: utils.genNeighborID(infohash, this.ktable.nid),
         nodes: '',
-        token: token
+        token
       }
     }, rinfo);
   }
 
-  onAnnouncePeerRequest(msg, rinfo){
+  onAnnouncePeerRequest(msg, rinfo) {
     let port;
 
     let infohash = msg.a.info_hash;
@@ -118,7 +117,7 @@ export default class DHTSpider {
 
     if (msg.a.implied_port !== undefined && msg.a.implied_port !== 0) {
       port = rinfo.port;
-    }else {
+    } else {
       port = msg.a.port || 0;
     }
 
@@ -136,28 +135,28 @@ export default class DHTSpider {
 
     this.btclient.download({
       address: rinfo.address,
-      port: port
+      port
     }, infohash);
   }
 
-  onMessage(msg, rinfo){
-    try{
+  onMessage(msg, rinfo) {
+    try {
       msg = bencode.decode(msg);
-    }catch(e){
+    } catch (e) {
       return;
     }
     let y = msg.y && msg.y.toString();
     let q = msg.q && msg.q.toString();
     if (y === 'r' && msg.r && msg.r.nodes) {
       this.onFindNodeResponse(msg.r.nodes);
-    }else if (y === 'q' && q === 'get_peers') {
+    } else if (y === 'q' && q === 'get_peers') {
       this.onGetPeersRequest(msg, rinfo);
-    }else if (y === 'q' && q === 'announce_peer') {
+    } else if (y === 'q' && q === 'announce_peer') {
       this.onAnnouncePeerRequest(msg, rinfo);
     }
   }
 
-  start(){
+  start() {
     this.udp.bind(this.port, this.address);
 
     this.udp.on('listening', () => {
@@ -176,7 +175,7 @@ export default class DHTSpider {
     setInterval(() => this.makeNeighbours(), 1000);
   }
 
-  static start(options){
+  static start(options) {
     let instance = new DHTSpider(options);
     instance.start();
   }

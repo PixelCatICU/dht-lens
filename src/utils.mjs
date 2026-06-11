@@ -1,6 +1,6 @@
 import crypto from 'crypto';
-import { Buffer } from 'node:buffer'
-import { Iconv } from 'iconv'
+import { Buffer } from 'node:buffer';
+import iconv from 'iconv-lite';
 
 export default {
   /**
@@ -15,7 +15,7 @@ export default {
    * @param  {[type]} data [description]
    * @return {[type]}      [description]
    */
-  decodeNodes(data){
+  decodeNodes(data) {
     let nodes = [];
     for (let i = 0; i + 26 <= data.length; i += 26) {
       nodes.push({
@@ -32,7 +32,7 @@ export default {
    * @param  {[type]} nid    [description]
    * @return {[type]}        [description]
    */
-  genNeighborID(target, nid){
+  genNeighborID(target, nid) {
     return Buffer.concat([target.slice(0, 10), nid.slice(10)]);
   },
   /**
@@ -40,29 +40,29 @@ export default {
    * @param  {[type]} buffer [description]
    * @return {string|string}        [description]
    */
-  toUtf8String(buffer){
+  toUtf8String(buffer) {
     const langs = [
-      'UTF-8', 'GBK', 'GB2312', 'BIG5', 'EUC-JP', 'EUC-KR', 'Shift_JIS',
-      'UTF-16', 'UTF-16BE', 'UTF-16LE', 'UTF-EBCDIC',
-      'HZ-GB-2312', 'ISCII', 'SJIS', 'EUC-CN', 'EUC-TW',
-      'CP932', 'EUC-JP-MS', 'EUC-KR-MS',
-      'ASCII', 'KOI8-R', 'KOI8-U', 'Windows-1251'
-    ]
-    let str = ''
+      'utf8', 'gbk', 'gb2312', 'big5', 'euc-jp', 'euc-kr', 'shift_jis',
+      'utf16', 'utf16-be', 'utf16le', 'cp932', 'ascii', 'koi8-r', 'koi8-u',
+      'windows-1251'
+    ];
+    let str = '';
 
-    for(const c of langs) {
-      try{
-        const iconv = new Iconv(c, 'utf-8')
-        str = iconv.convert(buffer).toString()
-        if (c !== 'UTF-8') {
-          console.log('----- success to decode ' + c)
+    for (const c of langs) {
+      try {
+        if (!iconv.encodingExists(c)) {
+          continue;
         }
-        break
-      }catch(e){
+        str = iconv.decode(buffer, c);
+        if (c !== 'utf8') {
+          console.log('----- success to decode ' + c);
+        }
+        break;
+      } catch (e) {
         // console.log('----- failed to decode')
       }
     }
-    return str ? str : Buffer.toString()
+    return str ? str : buffer.toString();
 
     // for(const encoding of langs) {
     //   try {
@@ -73,6 +73,6 @@ export default {
     //     // console.log('failed to decode', buffer.toString('hex'))
     //   }
     // }
-    return str
+    return str;
   }
 };

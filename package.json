@@ -6,20 +6,19 @@
   "author": {
     "name": "Leo Yang"
   },
-  "main": "app.js",
+  "main": "app.mjs",
   "scripts": {
     "test": "npm run eslint",
-    "eslint": "eslint src/",
-    "start": "node app.js"
+    "eslint": "eslint .",
+    "start": "node app.mjs"
   },
   "dependencies": {
     "bencode": "^0.7.0",
-    "bitfield": "^1.1.2",
-    "iconv": "^3.0.1",
-    "lru": "^2.0.0"
+    "iconv-lite": "^0.6.3",
+    "lru-cache": "^11.1.0"
   },
   "devDependencies": {
-    "eslint": "^1.10.3"
+    "eslint": "^9.29.0"
   },
   "keywords": [
     "torrent",

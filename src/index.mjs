@@ -1,10 +1,8 @@
-
-import DHTSpider from './dht.js';
-import BTClient from './btclient.js';
+import DHTSpider from './dht.mjs';
+import BTClient from './btclient.mjs';
 
 export default (options = {}, callback) => {
-
-  if(typeof options === 'function'){
+  if (typeof options === 'function') {
     callback = options;
     options = {};
   }
@@ -18,17 +16,17 @@ export default (options = {}, callback) => {
     data.infohash = infohash.toString('hex');
     data.magnet = 'magnet:?xt=urn:btih:' + data.infohash;
 
-    if(callback){
+    if (callback) {
       callback(data);
-    }else{
+    } else {
       console.log(data.name, data.magnet);
     }
   });
 
   DHTSpider.start({
-    btclient: btclient,
+    btclient,
     address: '0.0.0.0',
     port: options.port || 6219,
-    nodesMaxSize: options.nodesMaxSize || 4000  // 值越大, 网络, 内存, CPU 消耗就越大, 收集速度会变慢.
+    nodesMaxSize: options.nodesMaxSize || 4000 // 值越大, 网络, 内存, CPU 消耗就越大, 收集速度会变慢.
   });
 };

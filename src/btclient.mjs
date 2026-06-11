@@ -1,8 +1,8 @@
 import net from 'net';
 import EventEmitter from 'events';
-import LRU from 'lru';
-import Wire from './wire.js';
-import utils from './utils.js';
+import { LRUCache } from 'lru-cache';
+import Wire from './wire.mjs';
+import utils from './utils.mjs';
 
 export default class BTClient extends EventEmitter {
   /**
@@ -10,12 +10,12 @@ export default class BTClient extends EventEmitter {
    * @param  {Object} options [description]
    * @return {[type]}         [description]
    */
-  constructor(options = {}){
+  constructor(options = {}) {
     super();
     this.timeout = options.timeout || 5000;
-    this.lru = LRU({
+    this.lru = new LRUCache({
       max: 100000,
-      maxAge: 1000 * 60 * 10,
+      ttl: 1000 * 60 * 10,
     });
   }
   /**
@@ -23,10 +23,10 @@ export default class BTClient extends EventEmitter {
    * @param  {[type]} metadata [description]
    * @return {[type]}          [description]
    */
-  formatMetaData(metadata){
+  formatMetaData(metadata) {
     let info = metadata.info;
     let name = (info['utf-8.name'] || info.name);
-    if(!name){
+    if (!name) {
       return;
     }
     name = utils.toUtf8String(name);
@@ -35,10 +35,10 @@ export default class BTClient extends EventEmitter {
       name,
       size: info.length
     };
-    if(info.private){
+    if (info.private) {
       data.private = info.private;
     }
-    if(info.files){
+    if (info.files) {
       let total = 0;
       data.files = info.files.map(item => {
         item.path = item.path.map(it => {
@@ -53,7 +53,7 @@ export default class BTClient extends EventEmitter {
         return a.size > b.size ? -1 : 1;
       });
       data.size = total;
-    }else{
+    } else {
       data.files = [{
         size: data.size,
         path: data.name
@@ -62,7 +62,7 @@ export default class BTClient extends EventEmitter {
 
     let extraProperties = ['source', 'profiles', 'private', 'file-duration', 'file-media', 'pieces'];
     extraProperties.forEach(item => {
-      if(info[item]){
+      if (info[item]) {
         data[item] = info[item];
       }
     });
@@ -75,9 +75,9 @@ export default class BTClient extends EventEmitter {
    * @param  {[type]} infohash [description]
    * @return {[type]}          [description]
    */
-  download(rinfo = {}, infohash){
+  download(rinfo = {}, infohash) {
     let infoHashHex = infohash.toString('hex');
-    if (this.lru.get(infoHashHex) ) {
+    if (this.lru.get(infoHashHex)) {
       return;
     }
     this.lru.set(infoHashHex, true);
@@ -94,7 +94,7 @@ export default class BTClient extends EventEmitter {
         socket.destroy();
 
         metadata = this.formatMetaData(metadata);
-        if(!metadata){
+        if (!metadata) {
           return;
         }
         this.emit('complete', metadata, infoHash, rinfo);

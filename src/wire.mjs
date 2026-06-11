@@ -1,19 +1,16 @@
 import stream from 'stream';
 import crypto from 'crypto';
 
-import BitField from 'bitfield';
 import bencode from 'bencode';
-import { Buffer } from 'node:buffer'
+import { Buffer } from 'node:buffer';
 
-
-import utils from './utils.js';
+import utils from './utils.mjs';
 
 const BT_RESERVED = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x01]);
 const BT_PROTOCOL = Buffer.from('BitTorrent protocol');
 const PIECE_LENGTH = Math.pow(2, 14);
 const MAX_METADATA_SIZE = 10000000;
 const EXT_HANDSHAKE_ID = 0;
-const BITFIELD_GROW = 1000;
 const BT_MSG_ID = 20;
 
 export default class Wire extends stream.Duplex {
@@ -22,12 +19,10 @@ export default class Wire extends stream.Duplex {
    * @param  {[type]} infohash [description]
    * @return {[type]}          [description]
    */
-  constructor(infohash){
+  constructor(infohash) {
     super();
 
-    this._bitfield = new BitField(0, {
-      grow: BITFIELD_GROW
-    });
+    this._pieces = new Set();
     this._infohash = infohash;
 
     this._buffer = [];
@@ -44,36 +39,36 @@ export default class Wire extends stream.Duplex {
     this._onHandshake();
   }
 
-  _onMessageLength(buffer){
+  _onMessageLength(buffer) {
     let length = buffer.readUInt32BE(0);
     if (length > 0) {
       this._register(length, this._onMessage);
     }
   }
 
-  _onMessage(buffer){
+  _onMessage(buffer) {
     this._register(4, buffer => this._onMessageLength(buffer));
     if (buffer[0] === BT_MSG_ID) {
       this._onExtended(buffer.readUInt8(1), buffer.slice(2));
     }
   }
 
-  _onExtended(ext, buf){
+  _onExtended(ext, buf) {
     if (ext === 0) {
-      try{
+      try {
         this._onExtHandshake(bencode.decode(buf));
-      }catch(e){}
-    }else {
+      } catch (e) {}
+    } else {
       this._onPiece(buf);
     }
   }
 
-  _register(size, next){
+  _register(size, next) {
     this._nextSize = size;
     this._next = next;
   }
 
-  _onHandshake(){
+  _onHandshake() {
     this._register(1, buffer => {
       let pstrlen = buffer.readUInt8(0);
       this._register(pstrlen + 48, handshake => {
@@ -91,9 +86,9 @@ export default class Wire extends stream.Duplex {
     });
   }
 
-  _onExtHandshake(extHandshake){
+  _onExtHandshake(extHandshake) {
     if (!extHandshake.metadata_size || !extHandshake.m.ut_metadata
-        || extHandshake.metadata_size > MAX_METADATA_SIZE) {
+      || extHandshake.metadata_size > MAX_METADATA_SIZE) {
       return;
     }
 
@@ -104,33 +99,33 @@ export default class Wire extends stream.Duplex {
     this._requestPieces();
   }
 
-  _requestPieces(){
+  _requestPieces() {
     this._metadata = Buffer.alloc(this._metadataSize);
     for (let piece = 0; piece < this._numPieces; piece++) {
       this._requestPiece(piece);
     }
   }
 
-  _requestPiece(piece){
+  _requestPiece(piece) {
     let msg = Buffer.concat([
       Buffer.from([BT_MSG_ID]),
       Buffer.from([this._ut_metadata]),
-      bencode.encode({msg_type: 0, piece: piece})
+      bencode.encode({ msg_type: 0, piece })
     ]);
     this._sendMessage(msg);
   }
 
-  _sendPacket(packet){
+  _sendPacket(packet) {
     this.push(packet);
   }
 
-  _sendMessage(msg){
-    let buf = new Buffer(4);
+  _sendMessage(msg) {
+    let buf = Buffer.alloc(4);
     buf.writeUInt32BE(msg.length, 0);
     this._sendPacket(Buffer.concat([buf, msg]));
   }
 
-  sendHandshake(){
+  sendHandshake() {
     let peerID = utils.randomID();
     let packet = Buffer.concat([
       Buffer.from([BT_PROTOCOL.length]),
@@ -142,16 +137,16 @@ export default class Wire extends stream.Duplex {
     this._sendPacket(packet);
   }
 
-  _sendExtHandshake(){
+  _sendExtHandshake() {
     let msg = Buffer.concat([
       Buffer.from([BT_MSG_ID]),
       Buffer.from([EXT_HANDSHAKE_ID]),
-      bencode.encode({m: {ut_metadata: 1}})
+      bencode.encode({ m: { ut_metadata: 1 } })
     ]);
     this._sendMessage(msg);
   }
 
-  _onPiece(piece){
+  _onPiece(piece) {
     let dict, trailer;
     try {
       let str = piece.toString();
@@ -165,29 +160,25 @@ export default class Wire extends stream.Duplex {
     if (dict.msg_type !== 1) {
       return;
     }
+    if (dict.piece < 0 || dict.piece >= this._numPieces) {
+      return;
+    }
     if (trailer.length > PIECE_LENGTH) {
       return;
     }
     trailer.copy(this._metadata, dict.piece * PIECE_LENGTH);
-    this._bitfield.set(dict.piece);
+    this._pieces.add(dict.piece);
     this._checkDone();
   }
 
-  _checkDone(){
-    let done = true;
-    for (let piece = 0; piece < this._numPieces; piece++) {
-      if (!this._bitfield.get(piece) ) {
-        done = false;
-        break;
-      }
-    }
-    if (!done) {
+  _checkDone() {
+    if (this._pieces.size !== this._numPieces) {
       return;
     }
     this._onDone(this._metadata);
   }
 
-  _onDone(metadata){
+  _onDone(metadata) {
     try {
       let info = bencode.decode(metadata).info;
       if (info) {
@@ -198,13 +189,13 @@ export default class Wire extends stream.Duplex {
       return;
     }
     let infohash = crypto.createHash('sha1').update(metadata).digest('hex');
-    if (this._infohash.toString('hex') !== infohash ) {
+    if (this._infohash.toString('hex') !== infohash) {
       return false;
     }
-    this.emit('metadata', {info: bencode.decode(metadata)}, this._infohash);
+    this.emit('metadata', { info: bencode.decode(metadata) }, this._infohash);
   }
 
-  _write(buf, encoding, next){
+  _write(buf, encoding, next) {
     this._bufferSize += buf.length;
     this._buffer.push(buf);
 
@@ -218,7 +209,7 @@ export default class Wire extends stream.Duplex {
     next(null);
   }
 
-  _read(){
+  _read() {
 
   }
 }
