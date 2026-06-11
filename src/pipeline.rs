@@ -61,7 +61,11 @@ pub async fn run_crawl(config: AppConfig, store: Option<Arc<LibsqlStore>>) -> Re
             let _permit = permit;
             let info_hash = hex::encode(event.info_hash);
             if let Err(err) = process_hash(event, config, store).await {
-                info!(%info_hash, error = %err, "info_hash dropped");
+                if err.to_string() == "no usable peers for metadata" {
+                    debug!(%info_hash, error = %err, "info_hash dropped");
+                } else {
+                    warn!(%info_hash, error = %err, "info_hash processing failed");
+                }
             }
         });
     }
@@ -89,7 +93,7 @@ async fn process_hash(
     peers.dedup();
     peers.shuffle(&mut rand::thread_rng());
     event.peer_count = peers.len() as u32;
-    info!(
+    debug!(
         info_hash = %info_hash_hex,
         peer_count = event.peer_count,
         source = ?event.source,
@@ -139,10 +143,7 @@ async fn fetch_from_first_peer(
                 tasks.abort_all();
                 return Ok(metadata);
             }
-            Ok((peer, Err(err))) => {
-                info!(%peer, error = %err, "metadata peer failed");
-                debug!(%peer, error = %err, "metadata peer failed");
-            }
+            Ok((peer, Err(err))) => debug!(%peer, error = %err, "metadata peer failed"),
             Err(err) => {
                 debug!(error = %err, "metadata peer task failed");
             }

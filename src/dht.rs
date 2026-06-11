@@ -398,7 +398,7 @@ async fn handle_packet(
             {
                 let node_id = closest_node_id(&node_ids, &hash);
                 let peer = announce_peer_addr(args, addr);
-                info!(info_hash = %hex::encode(hash), source = "announce_peer", ?peer, "discovered info_hash");
+                debug!(info_hash = %hex::encode(hash), source = "announce_peer", ?peer, "discovered info_hash");
                 let _ = tx
                     .send(InfoHashEvent {
                         info_hash: hash,
