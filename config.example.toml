@@ -20,7 +20,7 @@ max_metadata_size_mb = 8
 [pipeline]
 info_hash_queue_size = 50000
 result_queue_size = 100000
-peer_collect_window_ms = 750
+peer_collect_window_ms = 200
 print_jsonl = true
 
 [storage]

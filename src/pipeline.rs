@@ -249,6 +249,7 @@ async fn process_hash(
         name = %record.name,
         total_size = record.total_size,
         file_count = record.file_count,
+        peer_count = record.peer_count,
         "metadata fetched"
     );
 
