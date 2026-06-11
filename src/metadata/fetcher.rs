@@ -10,7 +10,7 @@ use tokio::{
 };
 
 use crate::{
-    bencode::{Value, as_int, dict_get, encode, parse},
+    bencode::{Value, as_int, dict_get, encode, parse, parse_prefix},
     config::MetadataConfig,
     metadata::parser::{ParsedMetadata, parse_info_metadata},
 };
@@ -140,7 +140,7 @@ async fn fetch_metadata_pieces(
             continue;
         }
         let body = &payload[2..];
-        let (header, data_offset) = parse_prefix_dict(body)?;
+        let (header, data_offset) = parse_prefix(body)?;
         let Value::Dict(dict) = header else {
             continue;
         };
@@ -190,24 +190,6 @@ async fn read_message(stream: &mut TcpStream) -> Result<Vec<u8>> {
     let mut payload = vec![0u8; len];
     stream.read_exact(&mut payload).await?;
     Ok(payload)
-}
-
-fn parse_prefix_dict(input: &[u8]) -> Result<(Value, usize)> {
-    let mut depth = 0i32;
-    for (idx, byte) in input.iter().enumerate() {
-        match byte {
-            b'd' | b'l' => depth += 1,
-            b'e' => {
-                depth -= 1;
-                if depth == 0 {
-                    let end = idx + 1;
-                    return Ok((parse(&input[..end])?, end));
-                }
-            }
-            _ => {}
-        }
-    }
-    bail!("missing metadata message header")
 }
 
 fn encode_to_vec(value: &Value) -> Vec<u8> {
