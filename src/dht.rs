@@ -169,6 +169,7 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
     let v4_bootstrap_query_limit = config.bootstrap_query_limit;
     let v4_get_peers_probe_count = config.get_peers_probe_count;
     let v4_get_peers_probe_depth = config.get_peers_probe_depth;
+    let v4_get_peers_probe_sample_rate = config.get_peers_probe_sample_rate;
     let v4_packet_workers = config.packet_workers;
     let v4_packet_queue_size = config.packet_queue_size;
     let v4_crawl_mode = config.crawl_mode;
@@ -181,6 +182,7 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
             v4_bootstrap_query_limit,
             v4_get_peers_probe_count,
             v4_get_peers_probe_depth,
+            v4_get_peers_probe_sample_rate,
             v4_packet_workers,
             v4_packet_queue_size,
             v4_crawl_mode,
@@ -202,6 +204,7 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
         let v6_bootstrap_query_limit = config.bootstrap_query_limit;
         let v6_get_peers_probe_count = config.get_peers_probe_count;
         let v6_get_peers_probe_depth = config.get_peers_probe_depth;
+        let v6_get_peers_probe_sample_rate = config.get_peers_probe_sample_rate;
         let v6_packet_workers = config.packet_workers;
         let v6_packet_queue_size = config.packet_queue_size;
         let v6_crawl_mode = config.crawl_mode;
@@ -214,6 +217,7 @@ pub async fn run(config: DhtConfig, tx: mpsc::Sender<InfoHashEvent>) -> Result<(
                 v6_bootstrap_query_limit,
                 v6_get_peers_probe_count,
                 v6_get_peers_probe_depth,
+                v6_get_peers_probe_sample_rate,
                 v6_packet_workers,
                 v6_packet_queue_size,
                 v6_crawl_mode,
@@ -242,6 +246,7 @@ async fn run_listener(
     bootstrap_query_limit: usize,
     get_peers_probe_count: usize,
     get_peers_probe_depth: u8,
+    get_peers_probe_sample_rate: usize,
     packet_workers: usize,
     packet_queue_size: usize,
     crawl_mode: bool,
@@ -263,6 +268,9 @@ async fn run_listener(
         packet_queue_size,
         crawl_mode,
         crawl_response_nodes,
+        get_peers_probe_count,
+        get_peers_probe_depth,
+        get_peers_probe_sample_rate,
         "dht listener bound"
     );
     tokio::spawn(bootstrap_loop(
@@ -293,6 +301,7 @@ async fn run_listener(
                     &packet.bytes,
                     get_peers_probe_count,
                     get_peers_probe_depth,
+                    get_peers_probe_sample_rate,
                     crawl_mode,
                     crawl_response_nodes,
                     worker_stats.clone(),
@@ -469,6 +478,7 @@ async fn handle_packet(
     packet: &[u8],
     get_peers_probe_count: usize,
     get_peers_probe_depth: u8,
+    get_peers_probe_sample_rate: usize,
     crawl_mode: bool,
     crawl_response_nodes: usize,
     stats: Arc<DhtStats>,
@@ -574,7 +584,9 @@ async fn handle_packet(
                     },
                     &stats,
                 );
-                if get_peers_probe_count > 0 {
+                if get_peers_probe_count > 0
+                    && should_probe_get_peers_hash(&hash, get_peers_probe_sample_rate)
+                {
                     probe_get_peers(
                         socket.clone(),
                         node_ids.clone(),
@@ -651,6 +663,14 @@ fn emit_event(tx: &mpsc::Sender<InfoHashEvent>, event: InfoHashEvent, stats: &Dh
         stats.events_dropped.fetch_add(1, Ordering::Relaxed);
         debug!(error = %err, "dropping dht event because pipeline queue is full");
     }
+}
+
+fn should_probe_get_peers_hash(info_hash: &[u8; 20], sample_rate: usize) -> bool {
+    if sample_rate <= 1 {
+        return true;
+    }
+    let bucket = u16::from_be_bytes([info_hash[0], info_hash[1]]) as usize;
+    bucket % sample_rate == 0
 }
 
 fn find_node_request(node_id: &[u8; 20], target: &[u8; 20]) -> Vec<u8> {
