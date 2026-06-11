@@ -1,9 +1,8 @@
+mod adysec_engine;
 mod bencode;
 mod config;
-mod dht;
 mod metadata;
 mod model;
-mod pipeline;
 mod search;
 mod storage;
 
@@ -70,7 +69,7 @@ async fn main() -> Result<()> {
             } else {
                 None
             };
-            pipeline::run_crawl(config, store).await?;
+            adysec_engine::run_crawl(config, store).await?;
         }
         Command::Search { query, limit } => {
             let store = connect_store(&config).await?;

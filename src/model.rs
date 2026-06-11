@@ -39,6 +39,7 @@ impl Source {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct InfoHashEvent {
     pub info_hash: [u8; 20],
     pub source: Source,

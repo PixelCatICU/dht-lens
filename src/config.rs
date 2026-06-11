@@ -12,6 +12,7 @@ pub struct AppConfig {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DhtConfig {
     pub listen_addr: SocketAddr,
     pub listen_addr_v6: Option<SocketAddr>,
@@ -30,6 +31,7 @@ pub struct DhtConfig {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct MetadataConfig {
     pub max_concurrent_fetches: usize,
     pub max_peers_per_hash: usize,
@@ -39,6 +41,7 @@ pub struct MetadataConfig {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PipelineConfig {
     pub info_hash_queue_size: usize,
     pub result_queue_size: usize,
@@ -47,6 +50,7 @@ pub struct PipelineConfig {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct StorageConfig {
     pub enabled: bool,
     pub database_url: Option<String>,

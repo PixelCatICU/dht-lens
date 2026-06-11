@@ -5,12 +5,14 @@ Rust DHT magnet metadata crawler.
 The first version runs as a single-node long-lived service:
 
 - listens on public Mainline DHT
-- discovers `info_hash` from `get_peers` and `announce_peer`
-- uses `get_peers` traffic for discovery and node table growth
+- uses `adysec/dht-spider` as the DHT crawler engine
+- runs `adysec` Crawl mode to bias peers toward `announce_peer`
+- discovers `info_hash` from `announce_peer`, `get_peers` values, and PeX peers
+- uses recursive `find_node` / `get_peers` traffic for node table growth
 - fetches metadata from public `announce_peer` addresses
 - fetches BEP 9 torrent metadata from peers
 - parses `name`, `total_size`, and file list
-- prints JSONL
+- prints fetched metadata names
 - writes successful metadata only to remote libSQL
 - indexes `name_ngram` with libSQL FTS5
 - stores 5-minute and hourly trend buckets
@@ -30,29 +32,14 @@ Optional runtime settings can be provided through environment variables:
 
 ```env
 DHT_LISTEN_ADDR=0.0.0.0:6881
-DHT_LISTEN_ADDR_V6=[::]:6881
 DHT_BOOTSTRAP_QUERY_LIMIT=512
-DHT_GET_PEERS_PROBE_COUNT=0
 DHT_GET_PEERS_PROBE_DEPTH=1
-DHT_GET_PEERS_PROBE_SAMPLE_RATE=16
-DHT_PACKET_WORKERS=8
-DHT_PACKET_QUEUE_SIZE=65536
-DHT_NODE_SHARDS=64
 DHT_CRAWL_MODE=true
-DHT_CRAWL_RESPONSE_NODES=8
-DHT_VIRTUAL_NODES=512
 DHT_ROUTING_TABLE_MAX_NODES=100000
 METADATA_MAX_CONCURRENT_FETCHES=1000
-METADATA_MAX_PEERS_PER_HASH=64
-METADATA_CONNECT_TIMEOUT_SECS=4
-METADATA_TIMEOUT_SECS=8
-METADATA_MAX_SIZE_MB=8
 INFO_HASH_QUEUE_SIZE=10000
-PEER_COLLECT_WINDOW_MS=2000
 PRINT_JSONL=true
 STORAGE_ENABLED=true
-DB_BATCH_SIZE=100
-DB_FLUSH_INTERVAL_MS=1000
 MAX_FILES_PER_TORRENT=2000
 MAX_FILE_PATH_LEN=1024
 MAX_NAME_NGRAM_LEN=4096
@@ -101,17 +88,9 @@ LIBSQL_DATABASE_URL=https://your-libsql-host.example.com
 LIBSQL_AUTH_TOKEN=replace-with-token
 RUST_LOG=dht_lens=info
 DHT_LISTEN_ADDR=0.0.0.0:6881
-DHT_LISTEN_ADDR_V6=[::]:6881
 DHT_BOOTSTRAP_QUERY_LIMIT=512
-DHT_GET_PEERS_PROBE_COUNT=0
 DHT_GET_PEERS_PROBE_DEPTH=1
-DHT_GET_PEERS_PROBE_SAMPLE_RATE=16
-DHT_PACKET_WORKERS=8
-DHT_PACKET_QUEUE_SIZE=65536
-DHT_NODE_SHARDS=64
 DHT_CRAWL_MODE=true
-DHT_CRAWL_RESPONSE_NODES=8
-DHT_VIRTUAL_NODES=512
 PRINT_JSONL=true
 STORAGE_ENABLED=true
 ```
@@ -164,8 +143,8 @@ This sets:
 CapRover's normal HTTP routing does not automatically publish UDP DHT traffic.
 For best DHT listener performance, expose UDP `6881` on the host or run this
 service on a host/network where inbound UDP is reachable. The crawler still
-performs active `get_peers` queries, but passive DHT discovery benefits from
-inbound UDP.
+performs recursive DHT queries through `adysec/dht-spider`, but passive DHT
+discovery benefits from inbound UDP.
 
 ## Database
 
@@ -197,9 +176,9 @@ Example:
 
 ## Current Boundary
 
-This version implements the crawler pipeline and protocol primitives directly.
-The DHT side uses a dedicated UDP reader, packet worker queues, a sharded node
-table, Crawl-mode `get_peers` responses, optional active `get_peers` probes, and
-BEP 11 PeX peer discovery during metadata fetches. A production crawler should
-next add stricter token validation, better node scoring, and live metrics for
-packet drops, queue depth, metadata success rate, and storage latency.
+This version delegates DHT crawl behavior and BEP 9/10/11 metadata fetching to
+`adysec/dht-spider`, while keeping dht-lens responsible for metadata parsing,
+libSQL writes, trend buckets, and name search. The active knobs that matter most
+now are `DHT_LISTEN_ADDR`, `DHT_BOOTSTRAP_NODES`, `DHT_BOOTSTRAP_QUERY_LIMIT`,
+`DHT_CRAWL_MODE`, `DHT_ROUTING_TABLE_MAX_NODES`,
+`METADATA_MAX_CONCURRENT_FETCHES`, and `INFO_HASH_QUEUE_SIZE`.
