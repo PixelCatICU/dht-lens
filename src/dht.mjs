@@ -11,6 +11,9 @@ const BOOTSTRAP_NODES = [
 const TID_LENGTH = 4;
 const NODES_MAX_SIZE = 1000;
 const TOKEN_LENGTH = 2;
+const JOIN_INTERVAL_MS = 5000;
+const MAKE_NEIGHBOURS_INTERVAL_MS = 3000;
+const UDP_BUFFER_SIZE = 4 * 1024 * 1024;
 
 export default class DHTSpider {
   /**
@@ -26,6 +29,10 @@ export default class DHTSpider {
     this.ktable = new KTable(options.nodesMaxSize || NODES_MAX_SIZE);
     this.bootstrapNodes = options.bootstrapNodes || BOOTSTRAP_NODES;
     this.onAnnouncePeer = options.onAnnouncePeer;
+    this.joinIntervalMs = options.joinIntervalMs || JOIN_INTERVAL_MS;
+    this.makeNeighboursIntervalMs = options.makeNeighboursIntervalMs || MAKE_NEIGHBOURS_INTERVAL_MS;
+    this.udpRecvBufferSize = options.udpRecvBufferSize || UDP_BUFFER_SIZE;
+    this.udpSendBufferSize = options.udpSendBufferSize || UDP_BUFFER_SIZE;
   }
 
   sendKRPC(msg, rinfo = {}) {
@@ -169,6 +176,12 @@ export default class DHTSpider {
     this.udp.bind(this.port, this.address);
 
     this.udp.on('listening', () => {
+      try {
+        this.udp.setRecvBufferSize(this.udpRecvBufferSize);
+        this.udp.setSendBufferSize(this.udpSendBufferSize);
+      } catch (error) {
+        console.log('failed to tune udp buffer:', error.message);
+      }
       console.log('udp start listening:', this.address, this.port);
     });
 
@@ -180,8 +193,8 @@ export default class DHTSpider {
       console.log('error', err.stack);
     });
 
-    setInterval(() => this.joinDHTNetwork(), 1000);
-    setInterval(() => this.makeNeighbours(), 1000);
+    setInterval(() => this.joinDHTNetwork(), this.joinIntervalMs);
+    setInterval(() => this.makeNeighbours(), this.makeNeighboursIntervalMs);
   }
 
   static start(options) {
